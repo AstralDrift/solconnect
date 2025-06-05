@@ -1,30 +1,5 @@
-namespace solchat_sdk {
-    SolChatSDK create_sdk();
-    MobileWalletAddress create_test_wallet(u8 seed);
-};
-
-[Custom]
-typedef string WalletAddressString;
-
-dictionary MobileWalletAddress {
-    WalletAddressString address;
-};
-
-[Enum]
-interface SendResult {
-    Success(string message_id);
-    Error(string message);
-};
-
-callback interface MessageCallback {
-    void on_message_received(string sender, string message);
-    void on_error(string error);
-};
+namespace solchat_sdk {};
 
 interface SolChatSDK {
     constructor();
-    void set_wallet(MobileWalletAddress wallet);
-    void set_callback(MessageCallback callback);
-    SendResult send_message(MobileWalletAddress recipient, string message);
-    void receive_callback(sequence<u8> raw_message);
 }; 

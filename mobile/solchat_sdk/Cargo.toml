@@ -10,7 +10,7 @@ description = "Mobile SDK for SolConnect with FFI bindings"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-solchat_protocol = { path = "../core/solchat_protocol" }
+solchat_protocol = { path = "../../core/solchat_protocol" }
 uniffi.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 serde.workspace = true
@@ -18,10 +18,6 @@ serde_json.workspace = true
 
 [build-dependencies]
 uniffi = { workspace = true, features = ["build"] }
-
-[[bin]]
-name = "uniffi-bindgen"
-path = "src/bin/uniffi-bindgen.rs"
 
 [package.metadata.uniffi.bindings]
 kotlin = true

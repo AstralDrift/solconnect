@@ -11,7 +11,7 @@ name = "solchat_relay"
 path = "src/main.rs"
 
 [dependencies]
-solchat_protocol = { path = "../core/solchat_protocol" }
+solchat_protocol = { path = "../../core/solchat_protocol" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

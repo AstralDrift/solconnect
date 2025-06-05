@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use quinn::{Endpoint, ServerConfig};
-use solchat_protocol::{ProtocolMessage, WalletAddress};
+use solchat_protocol::ProtocolMessage;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{info, warn, error};
@@ -98,7 +98,7 @@ async fn echo_messages(
                 send.write_all(&response).await?;
                 info!("📡 Ping-pong: {}", timestamp);
             }
-            Ok(msg) => {
+            Ok(_msg) => {
                 // Echo back any other message
                 send.write_all(data).await?;
                 info!("🔄 Echoed {} bytes", len);
@@ -118,15 +118,14 @@ async fn echo_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio_test;
 
     #[tokio::test]
     async fn test_echo_1kb_payload() {
         let test_data = vec![42u8; 1024]; // 1KB payload
         
         // Create a mock protocol message
-        let sender = WalletAddress::test_address(1);
-        let recipient = WalletAddress::test_address(2);
+        let sender = solchat_protocol::WalletAddress::test_address(1);
+        let recipient = solchat_protocol::WalletAddress::test_address(2);
         let msg = solchat_protocol::EncryptedMessage::new(
             sender,
             recipient,

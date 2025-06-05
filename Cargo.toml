@@ -17,7 +17,7 @@ tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 prost = "0.12"
-libsodium-sys = { version = "0.2", optional = true }
+libsodium-sys = "0.2"
 quinn = "0.10"
 clap = { version = "4.0", features = ["derive"] }
 uniffi = "0.25" 

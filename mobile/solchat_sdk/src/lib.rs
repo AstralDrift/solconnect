@@ -121,16 +121,7 @@ impl Default for SolChatSDK {
     }
 }
 
-// FFI exports for mobile platforms
-#[uniffi::export]
-pub fn create_sdk() -> Arc<SolChatSDK> {
-    Arc::new(SolChatSDK::new())
-}
-
-#[uniffi::export]
-pub fn create_test_wallet(seed: u8) -> MobileWalletAddress {
-    MobileWalletAddress::test_address(seed)
-}
+// FFI exports are defined in the UDL file
 
 #[cfg(test)]
 mod tests {
@@ -187,7 +178,7 @@ mod tests {
 
     #[test]
     fn test_receive_callback() {
-        let sdk = SolChatSDK::new();
+        let _sdk = SolChatSDK::new();
         let callback = Arc::new(TestCallback::new());
         
         // This would normally be set on the SDK, but for testing we'll call directly
@@ -195,7 +186,7 @@ mod tests {
         let recipient = WalletAddress::test_address(2);
         let msg = EncryptedMessage::new(sender, recipient, b"Test message".to_vec());
         let protocol_msg = ProtocolMessage::Chat(msg);
-        let serialized = serde_json::to_vec(&protocol_msg).unwrap();
+        let _serialized = serde_json::to_vec(&protocol_msg).unwrap();
         
         callback.on_message_received(
             "test_sender".to_string(),
