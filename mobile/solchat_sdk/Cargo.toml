@@ -16,6 +16,14 @@ tokio = { workspace = true, features = ["rt"] }
 serde.workspace = true
 serde_json.workspace = true
 
+# Cryptographic dependencies for mobile
+ed25519-dalek = { version = "1.0", features = ["rand"] }
+x25519-dalek = "1.1"
+sha2 = "0.10"
+rand_core = { version = "0.6", features = ["getrandom"] }
+zeroize = { version = "1.5", features = ["zeroize_derive"] }
+log = "0.4"
+
 [build-dependencies]
 uniffi = { workspace = true, features = ["build"] }
 

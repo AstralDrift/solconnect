@@ -1,0 +1,11 @@
+/Users/micahoates/Developer/x/SolConnect/target/debug/deps/libprost-def9fe83fa68f407.rmeta: /Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/lib.rs /Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/error.rs /Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/message.rs /Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/name.rs /Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/types.rs /Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/encoding.rs /Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/../README.md
+
+/Users/micahoates/Developer/x/SolConnect/target/debug/deps/prost-def9fe83fa68f407.d: /Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/lib.rs /Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/error.rs /Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/message.rs /Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/name.rs /Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/types.rs /Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/encoding.rs /Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/../README.md
+
+/Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/lib.rs:
+/Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/error.rs:
+/Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/message.rs:
+/Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/name.rs:
+/Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/types.rs:
+/Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/encoding.rs:
+/Users/micahoates/.cargo/registry/src/index.crates.io-6f17d22bba15001f/prost-0.12.6/src/../README.md:

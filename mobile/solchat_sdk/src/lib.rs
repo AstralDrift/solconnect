@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 // The future is mobile-first, and mobile is Rust-first 📱
 
+pub mod seed_vault;
+
 uniffi::include_scaffolding!("solchat_sdk");
 
 /// Mobile-friendly wrapper for wallet addresses
@@ -53,6 +55,7 @@ pub trait MessageCallback: Send + Sync {
 pub struct SolChatSDK {
     wallet_address: Option<MobileWalletAddress>,
     callback: Option<Arc<dyn MessageCallback>>,
+    seed_vault: Arc<seed_vault::SeedVaultManager>,
 }
 
 impl SolChatSDK {
@@ -60,6 +63,15 @@ impl SolChatSDK {
         Self {
             wallet_address: None,
             callback: None,
+            seed_vault: Arc::new(seed_vault::SeedVaultManager::new_mock()),
+        }
+    }
+
+    pub fn new_with_seed_vault(seed_vault: Arc<seed_vault::SeedVaultManager>) -> Self {
+        Self {
+            wallet_address: None,
+            callback: None,
+            seed_vault,
         }
     }
     
@@ -112,6 +124,31 @@ impl SolChatSDK {
                 }
             }
         }
+    }
+
+    /// Sign a message using hardware-backed Seed Vault
+    pub fn mobile_sign_message(&self, message: &[u8]) -> Result<Vec<u8>, String> {
+        self.seed_vault.mobile_sign_message(message)
+    }
+
+    /// Derive shared secret with peer using hardware-backed ECDH
+    pub fn mobile_derive_shared_secret(&self, peer_pubkey: &[u8]) -> Result<Vec<u8>, String> {
+        self.seed_vault.mobile_derive_shared_secret(peer_pubkey)
+    }
+
+    /// Get wallet public key from Seed Vault
+    pub fn get_wallet_public_key(&self) -> Result<Vec<u8>, String> {
+        self.seed_vault.get_wallet_public_key()
+    }
+
+    /// Check if Seed Vault is available
+    pub fn is_seed_vault_available(&self) -> bool {
+        self.seed_vault.is_seed_vault_available()
+    }
+
+    /// Request user authentication for Seed Vault access
+    pub fn request_authentication(&self) -> Result<(), String> {
+        self.seed_vault.request_user_authentication()
     }
 }
 

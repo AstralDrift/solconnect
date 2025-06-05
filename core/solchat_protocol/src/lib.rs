@@ -3,6 +3,8 @@ use std::fmt;
 
 // TODO: buy more SOL for coffee ☕
 
+pub mod crypto;
+
 /// Solana wallet address used for identity and encryption
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct WalletAddress(pub [u8; 32]);

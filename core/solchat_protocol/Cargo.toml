@@ -13,12 +13,27 @@ prost.workspace = true
 bs58 = "0.5"
 uuid = { version = "1.0", features = ["v4"] }
 
+# Cryptographic dependencies
+ed25519-dalek = { version = "1.0", features = ["rand"] }
+x25519-dalek = "1.1"
+curve25519-dalek = "3.2"
+sha2 = "0.10"
+hkdf = "0.12"
+aes-gcm = "0.9"
+rand_core = { version = "0.6", features = ["getrandom"] }
+zeroize = { version = "1.5", features = ["zeroize_derive"] }
+
+# Serialization for crypto state
+bincode = "1.3"
+
 # Feature-gated encryption support
 libsodium-sys = { workspace = true, optional = true }
 
 [features]
-default = []
+default = ["crypto"]
+crypto = []
 encryption = ["libsodium-sys"]
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] } 
+tokio = { workspace = true, features = ["test-util"] }
+hex = "0.4" 

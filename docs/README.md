@@ -72,10 +72,33 @@ cd apps/solchat_mobile && npm run android
 ## Key Features
 
 - **Wallet-Only Identity**: No separate accounts - your Solana wallet IS your identity
-- **End-to-End Encryption**: Messages encrypted with libsodium before relay
+- **End-to-End Encryption**: Double ratchet protocol with forward secrecy
+- **Hardware Security**: Solana Mobile Seed Vault integration for key operations
 - **QUIC Protocol**: Low-latency, mobile-optimized transport layer
 - **Cross-Platform**: iOS and Android via React Native + Rust FFI
 - **Devnet Ready**: Easy local development with k3d + Kubernetes
+
+## How Crypto Works
+
+SolConnect uses a hybrid cryptographic system designed for mobile-first security:
+
+### 🔑 Key Derivation
+```
+Ed25519 Wallet Key → HKDF-SHA256 → X25519 ECDH Key
+```
+Your existing Solana wallet keys are used to derive messaging keys via secure key derivation, keeping your wallet safe while enabling encrypted chat.
+
+### 🛡️ Session Security
+- **Double Ratchet Protocol**: Signal-style forward secrecy
+- **Hardware Protection**: Private keys never leave Seed Vault
+- **Perfect Forward Secrecy**: Compromised keys can't decrypt past messages
+- **Future Secrecy**: Compromised state can't decrypt future messages
+
+### 📱 Mobile Integration
+- **Seed Vault**: Hardware-backed key operations on Solana Mobile
+- **Secure Enclave**: iOS/Android hardware security modules
+- **Zero-Copy**: FFI layer minimizes sensitive data exposure
+- **Zeroization**: Keys automatically cleared from memory
 
 ## Development Workflow
 
