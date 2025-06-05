@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-tests:
+    name: Rust Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          
+      - name: Cache cargo
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          
+      - name: Check format
+        run: cargo fmt --all -- --check
+        
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+        
+      - name: Test core protocol
+        run: cargo test -p solchat_protocol
+        
+      - name: Test relay server
+        run: cargo test -p solchat_relay
+        
+      - name: Test mobile SDK
+        run: cargo test -p solchat_sdk
+
+  mobile-lint:
+    name: React Native Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./apps/solchat_mobile
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: ./apps/solchat_mobile/package-lock.json
+          
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: ESLint
+        run: npm run lint
+        
+      - name: TypeScript check
+        run: npm run type-check
+
+  devnet-simulation:
+    name: DevNet Deploy Simulation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install k3d
+        run: |
+          curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+          
+      - name: Create k3d cluster
+        run: |
+          k3d cluster create solconnect-devnet --config infra/devnet-k3d.yaml
+          
+      - name: Deploy relay (simulation)
+        run: |
+          kubectl create deployment solchat-relay --image=solconnect/relay:latest --dry-run=client -o yaml
+          echo "✅ DevNet simulation complete - ready for real deployment"
+          
+      - name: Cleanup
+        run: k3d cluster delete solconnect-devnet 

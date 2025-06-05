@@ -1,0 +1,27 @@
+[package]
+name = "solchat_relay"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "QUIC-based message relay server for SolConnect"
+
+[[bin]]
+name = "solchat_relay"
+path = "src/main.rs"
+
+[dependencies]
+solchat_protocol = { path = "../core/solchat_protocol" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+quinn.workspace = true
+clap.workspace = true
+tracing = "0.1"
+tracing-subscriber = "0.3"
+rustls = "0.21"
+rcgen = "0.11"
+anyhow = "1.0"
+
+[dev-dependencies]
+tokio-test = "0.4" 

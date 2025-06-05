@@ -1,0 +1,24 @@
+[package]
+name = "solchat_protocol"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core messaging protocol for SolConnect"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+prost.workspace = true
+bs58 = "0.5"
+uuid = { version = "1.0", features = ["v4"] }
+
+# Feature-gated encryption support
+libsodium-sys = { workspace = true, optional = true }
+
+[features]
+default = []
+encryption = ["libsodium-sys"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] } 
