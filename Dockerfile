@@ -1,14 +1,28 @@
-FROM rust:1.81.0-slim
+# Multi-stage build for SolConnect
 
-# Install system deps UniFFI might need
-RUN apt-get update && apt-get install -y \
-    libssl-dev clang cmake pkg-config
+# ----- Build Node.js frontend -----
+FROM node:18-bullseye AS frontend
+WORKDIR /build/SolConnectApp
+COPY SolConnectApp/package*.json ./
+RUN if [ -f package.json ]; then npm ci; fi
+COPY SolConnectApp .
+RUN if [ -f package.json ]; then npm run build; fi
 
-WORKDIR /usr/src/solconnect
-
+# ----- Build Rust components -----
+FROM rust:1.81.0-slim AS backend
+RUN apt-get update && apt-get install -y libssl-dev clang cmake pkg-config protobuf-compiler
+WORKDIR /build
 COPY . .
+RUN cargo build --release -p solchat_relay
+RUN cargo build --release -p solchat_sdk || true
 
-WORKDIR /usr/src/solconnect/mobile/solchat_sdk
-
-# Build the SDK
-RUN cargo build -vv 
+# ----- Production image -----
+FROM debian:bullseye-slim
+RUN apt-get update && apt-get install -y libsodium23 && rm -rf /var/lib/apt/lists/*
+COPY --from=backend /build/target/release/solchat_relay /usr/local/bin/solchat_relay
+COPY --from=frontend /build/SolConnectApp/.next /app/.next
+COPY --from=frontend /build/SolConnectApp/public /app/public
+WORKDIR /app
+ENV NODE_ENV=production
+EXPOSE 8080
+CMD ["/usr/local/bin/solchat_relay"]

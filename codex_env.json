@@ -1,4 +1,8 @@
 {
+  "name": "AstralDrift/solconnect",
+  "description": "Multi-platform Solana chat application with Rust backend and React Native frontend.",
+  "container_image": "universal",
+  "preinstalled_packages": ["nodejs", "rust"],
   "env_vars": {
     "SOLANA_RPC_URL": "https://api.devnet.solana.com",
     "SOLANA_NETWORK": "devnet",

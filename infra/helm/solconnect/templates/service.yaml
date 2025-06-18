@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "solconnect.fullname" . }}
+  labels:
+    app: {{ include "solconnect.name" . }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app: {{ include "solconnect.name" . }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.port }}
