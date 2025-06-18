@@ -25,6 +25,9 @@ SolConnect/
 
 ## Quick Start
 
+For a detailed walkthrough of the development workflow see
+[Developer Guide](docs/DEVELOPER_GUIDE.md).
+
 ### Prerequisites
 
 - Node.js 18+ 

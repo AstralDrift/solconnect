@@ -70,6 +70,9 @@ install_rust() {
     
     # Install uniffi-cli for FFI bindings
     cargo install uniffi-cli --version 0.29.2 --force
+
+    # Useful workflow helpers
+    cargo install cargo-make --force
 }
 
 # Install Node.js
@@ -86,10 +89,13 @@ install_nodejs() {
                 ;;
         esac
     fi
-    
+
     # Configure npm cache
     mkdir -p "${CACHE_DIR}/npm"
     npm config set cache "${CACHE_DIR}/npm"
+
+    # Tools useful for React Native development
+    npm install -g expo-cli
 }
 
 # Install Solana CLI

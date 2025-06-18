@@ -179,4 +179,16 @@ jobs:
           echo "✅ DevNet simulation complete - ready for real deployment"
           
       - name: Cleanup
-        run: k3d cluster delete solconnect-devnet 
+        run: k3d cluster delete solconnect-devnet
+
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build image
+        run: docker build -t solconnect/test-build .

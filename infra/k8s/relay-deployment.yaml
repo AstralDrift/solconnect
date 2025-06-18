@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: solchat-relay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: solchat-relay
+  template:
+    metadata:
+      labels:
+        app: solchat-relay
+    spec:
+      containers:
+        - name: relay
+          image: solconnect/relay:latest
+          ports:
+            - containerPort: 4433
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: solchat-relay
+spec:
+  selector:
+    app: solchat-relay
+  ports:
+    - port: 4433
+      targetPort: 4433
+      name: quic
+    - port: 8080
+      targetPort: 8080
+      name: metrics

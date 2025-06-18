@@ -1,0 +1,2 @@
+relayImage: solconnect/relay:latest
+webImage: solconnect/web:latest

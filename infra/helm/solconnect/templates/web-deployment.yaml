@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: solconnect-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: solconnect-web
+  template:
+    metadata:
+      labels:
+        app: solconnect-web
+    spec:
+      containers:
+        - name: web
+          image: {{ .Values.webImage }}
+          ports:
+            - containerPort: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: solconnect-web
+spec:
+  selector:
+    app: solconnect-web
+  ports:
+    - port: 80
+      targetPort: 3000

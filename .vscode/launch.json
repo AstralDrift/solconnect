@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug Relay Server",
+      "program": "${workspaceFolder}/target/debug/solchat_relay",
+      "args": ["--listen", "0.0.0.0:4433"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "pwa-node",
+      "request": "launch",
+      "name": "Debug Mobile App",
+      "program": "${workspaceFolder}/apps/solchat_mobile/node_modules/.bin/expo",
+      "args": ["start"],
+      "cwd": "${workspaceFolder}/apps/solchat_mobile"
+    }
+  ]
+}
