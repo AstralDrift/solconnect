@@ -22,52 +22,106 @@ SolConnect enables secure, peer-to-peer messaging using Solana wallet identities
 ## Quick Start
 
 ### Prerequisites
-- Rust 1.70+ with Android/iOS targets
+- Rust 1.70+
 - Node.js 18+
-- Expo CLI
-- Android Studio / Xcode (for mobile development)
-- k3d (for local devnet)
+- Android Studio (for Android development)
+- Xcode (for iOS development)
+- Solana CLI tools
 
-### Build & Test
+### Building the Mobile SDK
 
-```bash
-# Install Rust targets for mobile
-rustup target add aarch64-apple-ios aarch64-linux-android armv7-linux-androideabi
+1. Install Rust targets:
+   ```bash
+   rustup target add aarch64-linux-android aarch64-apple-ios
+   ```
 
-# Build and test all Rust components
-cargo build --all
-cargo test --all
+2. Build the SDK:
+   ```bash
+   cd mobile/solchat_sdk
+   cargo build --target aarch64-linux-android
+   cargo build --target aarch64-apple-ios
+   ```
 
-# Set up mobile app
-cd apps/solchat_mobile
-npm install
-npm run type-check
+### Running the Mobile App
 
-# Run mobile app (requires Expo dev tools)
-npm start
+1. Install dependencies:
+   ```bash
+   cd apps/solchat_mobile
+   npm install
+   ```
+
+2. Start the development server:
+   ```bash
+   npm start
+   ```
+
+3. Run on Android:
+   ```bash
+   npm run android
+   ```
+
+4. Run on iOS:
+   ```bash
+   npm run ios
+   ```
+
+### Connecting to Relay
+
+1. Start the relay server:
+   ```bash
+   cd relay
+   cargo run
+   ```
+
+2. The mobile app will automatically connect to the relay server at `localhost:8080` in development.
+
+## Development
+
+### Project Structure
+
+```
+.
+├── apps/
+│   └── solchat_mobile/     # React Native mobile app
+├── core/
+│   └── solchat_protocol/   # Core protocol implementation
+├── mobile/
+│   └── solchat_sdk/        # Mobile SDK with FFI bindings
+├── relay/                  # Relay server
+└── docs/                   # Documentation
 ```
 
-### Run Local DevNet
+### Testing
 
-```bash
-# Start k3d cluster for testing
-k3d cluster create solconnect-devnet --config infra/devnet-k3d.yaml
+1. Run Rust tests:
+   ```bash
+   cargo test
+   ```
 
-# Build and run relay server
-cargo run -p solchat_relay -- --listen 0.0.0.0:4433 --devnet
+2. Run mobile app tests:
+   ```bash
+   cd apps/solchat_mobile
+   npm test
+   ```
 
-# In another terminal, test the mobile app
-cd apps/solchat_mobile && npm run android
-```
+### Contributing
 
-## Project Structure
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Run tests
+5. Submit a pull request
 
-- `core/solchat_protocol/` - Core messaging protocol and encryption
-- `relay/solchat_relay/` - QUIC-based message relay server  
-- `mobile/solchat_sdk/` - Rust SDK with FFI bindings for mobile
-- `apps/solchat_mobile/` - React Native mobile application
-- `infra/` - Kubernetes and deployment configurations
-- `docs/` - Architecture Decision Records and documentation
+## Security
+
+- All cryptographic operations are performed in Rust
+- No sensitive data is stored in the mobile app
+- End-to-end encryption for all messages
+- Secure wallet integration via Solana Mobile Adapter
+
+## License
+
+MIT
 
 ## Key Features
 
@@ -77,6 +131,67 @@ cd apps/solchat_mobile && npm run android
 - **QUIC Protocol**: Low-latency, mobile-optimized transport layer
 - **Cross-Platform**: iOS and Android via React Native + Rust FFI
 - **Devnet Ready**: Easy local development with k3d + Kubernetes
+- **Protocol Buffers**: Efficient, versioned message serialization
+- **Metrics & Monitoring**: Prometheus metrics for relay performance
+- **Message TTL**: Automatic message expiration for privacy
+
+## Message Protocol
+
+SolConnect uses Protocol Buffers for efficient, versioned message serialization:
+
+### 📨 ChatMessage
+```protobuf
+message ChatMessage {
+  string id = 1;                    // Unique message ID
+  string sender_wallet = 2;         // Sender's wallet address (base58)
+  string recipient_wallet = 3;      // Recipient's wallet address (base58)
+  uint64 timestamp = 4;             // Unix timestamp
+  bytes encrypted_payload = 5;      // Encrypted message content
+  optional string attachment_url = 6; // Optional file attachment
+  uint32 ttl = 7;                   // Time-to-live in seconds
+  bytes signature = 8;              // Ed25519 signature
+}
+```
+
+### ✅ AckMessage
+```protobuf
+message AckMessage {
+  string id = 1;                    // Unique ack ID
+  string ref_message_id = 2;        // Reference to original message
+  AckStatus status = 3;             // Delivery status
+}
+
+enum AckStatus {
+  UNSPECIFIED = 0;
+  DELIVERED = 1;
+  FAILED = 2;
+  EXPIRED = 3;
+  REJECTED = 4;
+}
+```
+
+## Relay Server Features
+
+The relay server provides:
+
+- **Message Routing**: Efficient QUIC-based message delivery
+- **Acknowledgments**: Automatic delivery confirmations
+- **Metrics**: Prometheus metrics on `/metrics` endpoint
+- **Health Checks**: Simple health endpoint at `/health`
+- **Message Validation**: TTL expiry and payload validation
+- **Structured Logging**: Tracing with message metadata
+- **Backwards Compatibility**: Support for legacy JSON messages
+
+### Metrics Available
+
+- `solchat_messages_processed_total` - Total messages processed
+- `solchat_messages_failed_total` - Failed message processing attempts
+- `solchat_bytes_received_total` - Total bytes received
+- `solchat_bytes_sent_total` - Total bytes sent
+- `solchat_active_connections` - Current active connections
+- `solchat_message_latency_seconds` - Message processing latency
+- `solchat_message_size_bytes` - Message size distribution
+- `solchat_connection_duration_seconds` - Connection duration
 
 ## How Crypto Works
 
@@ -103,10 +218,12 @@ Your existing Solana wallet keys are used to derive messaging keys via secure ke
 ## Development Workflow
 
 1. Make changes to Rust core (`core/`, `relay/`, `mobile/`)
-2. Run tests: `cargo test --all`
-3. Update mobile app in `apps/solchat_mobile/`
-4. Test integration with local relay server
-5. Deploy to devnet using k3d cluster
+2. Update protobuf schemas in `core/solchat_protocol/proto/`
+3. Run tests: `cargo test --all`
+4. Test integration: `cargo test -p solchat_relay --test integration_tests`
+5. Update mobile app in `apps/solchat_mobile/`
+6. Test with local relay server and check metrics
+7. Deploy to devnet using k3d cluster
 
 ---
 

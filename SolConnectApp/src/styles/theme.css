@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Light theme */
+    --color-background-light: 0 0% 100%;
+    --color-background: 210 40% 98%;
+    --color-background-dark: 210 40% 96%;
+    
+    --color-text-light: 222 47% 11%;
+    --color-text: 215 25% 27%;
+    --color-text-dark: 215 16% 47%;
+    
+    --color-primary-light: 243 75% 59%;
+    --color-primary: 243 75% 59%;
+    --color-primary-dark: 243 75% 59%;
+    
+    --color-accent-light: 262 83% 58%;
+    --color-accent: 262 83% 58%;
+    --color-accent-dark: 262 83% 58%;
+  }
+
+  .dark {
+    /* Dark theme */
+    --color-background-light: 222 47% 11%;
+    --color-background: 222 47% 11%;
+    --color-background-dark: 222 47% 11%;
+    
+    --color-text-light: 210 40% 98%;
+    --color-text: 215 20% 65%;
+    --color-text-dark: 215 16% 47%;
+    
+    --color-primary-light: 243 75% 59%;
+    --color-primary: 243 75% 59%;
+    --color-primary-dark: 243 75% 59%;
+    
+    --color-accent-light: 262 83% 58%;
+    --color-accent: 262 83% 58%;
+    --color-accent-dark: 262 83% 58%;
+  }
+}
+
+/* Base styles */
+@layer base {
+  body {
+    @apply bg-background text-text antialiased;
+  }
+}
+
+/* Transitions */
+@layer utilities {
+  .transition-theme {
+    @apply transition-colors duration-200;
+  }
+} 

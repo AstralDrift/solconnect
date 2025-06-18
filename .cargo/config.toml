@@ -1,0 +1,6 @@
+[target.aarch64-linux-android]
+linker = "/opt/homebrew/share/android-ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android33-clang"
+ar = "/opt/homebrew/share/android-ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar"
+
+[env]
+ANDROID_NDK_HOME = "/opt/homebrew/share/android-ndk" 

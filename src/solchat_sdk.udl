@@ -1,0 +1,26 @@
+namespace solchat_sdk {
+    enum SdkError {
+        "WalletError",
+        "SessionError",
+        "NetworkError"
+    };
+
+    record Session {
+        string session_id;
+        string peer_wallet;
+    };
+
+    record EncryptedMessage {
+        string sender_wallet;
+        string ciphertext;
+        uint64 timestamp;
+    };
+
+    interface SolChatSdk {
+        constructor();
+        string wallet_login();
+        Session start_session(string peer_wallet);
+        void send_encrypted_message(Session session, string plaintext);
+        sequence<EncryptedMessage> poll_messages(Session session);
+    };
+}; 

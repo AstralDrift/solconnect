@@ -1,5 +1,0 @@
-namespace solchat_sdk {};
-
-interface SolChatSDK {
-    constructor();
-}; 

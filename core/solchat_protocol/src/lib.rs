@@ -4,6 +4,10 @@ use std::fmt;
 // TODO: buy more SOL for coffee ☕
 
 pub mod crypto;
+pub mod messages;
+
+// Re-export the new protobuf message types
+pub use messages::{ChatMessage, AckMessage, AckStatus};
 
 /// Solana wallet address used for identity and encryption
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -33,6 +37,8 @@ impl fmt::Display for WalletAddress {
 }
 
 /// Encrypted message container with metadata
+/// DEPRECATED: Use ChatMessage from protobuf instead
+#[deprecated(note = "Use ChatMessage from protobuf schema")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncryptedMessage {
     pub sender: WalletAddress,
@@ -72,6 +78,8 @@ impl EncryptedMessage {
 }
 
 /// Protocol message types
+/// DEPRECATED: Use protobuf message types instead
+#[deprecated(note = "Use protobuf message types")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ProtocolMessage {
     Chat(EncryptedMessage),
@@ -138,5 +146,21 @@ mod tests {
         assert_eq!(msg.payload, payload);
         assert_eq!(msg.size(), 14);
         assert!(!msg.message_id.is_empty());
+    }
+    
+    #[test]
+    fn test_new_protobuf_messages() {
+        let sender = WalletAddress::test_address(1);
+        let recipient = WalletAddress::test_address(2);
+        let payload = b"Hello, protobuf!".to_vec();
+        let signature = b"fake_signature".to_vec();
+        
+        let chat_msg = ChatMessage::new(&sender, &recipient, payload.clone(), signature);
+        assert!(!chat_msg.id.is_empty());
+        assert_eq!(chat_msg.encrypted_payload, payload);
+        
+        let ack_msg = AckMessage::delivered(chat_msg.id.clone());
+        assert_eq!(ack_msg.ref_message_id, chat_msg.id);
+        assert_eq!(ack_msg.status(), AckStatus::Delivered);
     }
 } 

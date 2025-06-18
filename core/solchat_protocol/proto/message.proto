@@ -1,0 +1,51 @@
+syntax = "proto3";
+package solchat.message;
+
+// Chat message with encrypted payload
+// Because we're not barbarians who send plaintext across the interwebs
+message ChatMessage {
+  // Unique message identifier  
+  string id = 1;
+  
+  // Sender's wallet address (32 bytes, base58 encoded)
+  string sender_wallet = 2;
+  
+  // Recipient's wallet address (32 bytes, base58 encoded)  
+  string recipient_wallet = 3;
+  
+  // Unix timestamp when message was created
+  uint64 timestamp = 4;
+  
+  // Encrypted message payload
+  bytes encrypted_payload = 5;
+  
+  // Optional attachment URL
+  optional string attachment_url = 6;
+  
+  // Time-to-live in seconds (0 = no expiry)
+  uint32 ttl = 7;
+  
+  // Ed25519 signature of the message content
+  bytes signature = 8;
+}
+
+// Acknowledgment message for received messages
+message AckMessage {
+  // Unique ack identifier
+  string id = 1;
+  
+  // Reference to the message being acknowledged
+  string ref_message_id = 2;
+  
+  // Acknowledgment status
+  AckStatus status = 3;
+}
+
+// Status codes for acknowledgments
+enum AckStatus {
+  UNSPECIFIED = 0;
+  DELIVERED = 1;
+  FAILED = 2;
+  EXPIRED = 3;
+  REJECTED = 4;
+} 

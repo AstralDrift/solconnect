@@ -2,8 +2,8 @@
 resolver = "2"
 members = [
     "core/solchat_protocol",
-    "relay/solchat_relay", 
-    "mobile/solchat_sdk"
+    "relay/solchat_relay",
+    "mobile/solchat_sdk",
 ]
 
 [workspace.package]
@@ -20,4 +20,6 @@ prost = "0.12"
 libsodium-sys = "0.2"
 quinn = "0.10"
 clap = { version = "4.0", features = ["derive"] }
-uniffi = "0.25" 
+
+[workspace.lints.rust]
+ 
