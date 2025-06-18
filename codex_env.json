@@ -1,0 +1,34 @@
+{
+  "env_vars": {
+    "SOLANA_RPC_URL": "https://api.devnet.solana.com",
+    "SOLANA_NETWORK": "devnet",
+    "SOLANA_COMMITMENT": "confirmed",
+    "RELAY_PORT": "8080",
+    "RELAY_HOST": "localhost",
+    "NEXT_PUBLIC_SOLANA_RPC_URL": "https://api.devnet.solana.com",
+    "NEXT_PUBLIC_RELAY_URL": "ws://localhost:8080",
+    "EXPO_PUBLIC_SOLANA_RPC_URL": "https://api.devnet.solana.com",
+    "EXPO_PUBLIC_RELAY_URL": "ws://localhost:8080",
+    "NODE_ENV": "development",
+    "CARGO_HOME": "./cache/cargo",
+    "NPM_CONFIG_CACHE": "./cache/npm"
+  },
+  "secrets": [
+    "SOLANA_PRIVATE_KEY",
+    "WALLET_PRIVATE_KEY"
+  ],
+  "agent_internet": "on",
+  "domain_allowlist": [
+    "registry.npmjs.org",
+    "crates.io",
+    "registry-1.docker.io",
+    "api.devnet.solana.com",
+    "api.mainnet-beta.solana.com",
+    "release.solana.com",
+    "sh.rustup.rs",
+    "raw.githubusercontent.com",
+    "deb.nodesource.com",
+    "get.docker.com"
+  ],
+  "http_methods": "all"
+}
