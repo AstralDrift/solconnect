@@ -123,4 +123,4 @@ web-build/
 
 # Relay logs
 relay-error.log
-relay.log 
+relay.log target/.rustc_info.json

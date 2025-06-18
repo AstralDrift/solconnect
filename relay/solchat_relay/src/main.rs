@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use hyper::{Body, Request, Response, Server};
 use hyper::service::{make_service_fn, service_fn};
-use quinn::{Endpoint, ServerConfig};
+use quinn::{Endpoint, ServerConfig, TransportConfig, VarInt, IdleTimeout};
 use solchat_protocol::{ChatMessage, AckMessage, AckStatus};
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -27,6 +27,18 @@ struct Args {
     
     #[arg(long)]
     devnet: bool,
+
+    /// Maximum idle timeout in seconds
+    #[arg(long, default_value_t = 30)]
+    max_idle_timeout: u64,
+
+    /// Keep-alive interval in seconds
+    #[arg(long, default_value_t = 10)]
+    keep_alive_interval: u64,
+
+    /// Maximum concurrent bidirectional streams
+    #[arg(long, default_value_t = 128)]
+    max_streams: u32,
 }
 
 #[derive(Clone)]
@@ -53,7 +65,7 @@ async fn main() -> Result<()> {
     let metrics_server = start_metrics_server(args.metrics_addr, metrics.clone());
     
     // Start QUIC server
-    let server_config = configure_server()?;
+    let server_config = configure_server(&args)?;
     let endpoint = Endpoint::server(server_config, args.listen)?;
     
     info!("✅ QUIC server listening on {}", args.listen);
@@ -118,7 +130,7 @@ async fn handle_metrics_request(
     }
 }
 
-fn configure_server() -> Result<ServerConfig> {
+fn configure_server(args: &Args) -> Result<ServerConfig> {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
     let cert_der = cert.serialize_der()?;
     let priv_key = cert.serialize_private_key_der();
@@ -126,12 +138,22 @@ fn configure_server() -> Result<ServerConfig> {
     let cert_chain = vec![rustls::Certificate(cert_der)];
     let key_der = rustls::PrivateKey(priv_key);
     
-    let server_config = rustls::ServerConfig::builder()
+    let rustls_config = rustls::ServerConfig::builder()
         .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(cert_chain, key_der)?;
-    
-    Ok(ServerConfig::with_crypto(Arc::new(server_config)))
+
+    let mut server_config = ServerConfig::with_crypto(Arc::new(rustls_config));
+
+    let mut transport_config = TransportConfig::default();
+    transport_config
+        .max_concurrent_bidi_streams(VarInt::from_u32(args.max_streams))
+        .keep_alive_interval(Some(std::time::Duration::from_secs(args.keep_alive_interval)))
+        .max_idle_timeout(Some(IdleTimeout::try_from(std::time::Duration::from_secs(args.max_idle_timeout))?));
+
+    server_config.transport = Arc::new(transport_config);
+
+    Ok(server_config)
 }
 
 async fn handle_connection(conn: quinn::Connecting, state: AppState) {
@@ -336,7 +358,15 @@ mod tests {
     
     #[test]
     fn test_server_config_creation() {
-        let config = configure_server();
+        let args = Args {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            metrics_addr: "127.0.0.1:0".parse().unwrap(),
+            devnet: false,
+            max_idle_timeout: 30,
+            keep_alive_interval: 10,
+            max_streams: 128,
+        };
+        let config = configure_server(&args);
         assert!(config.is_ok());
     }
-} 
+}
