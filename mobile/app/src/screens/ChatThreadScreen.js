@@ -1,14 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import {
-  View, Text, TextInput, Button, FlatList, StyleSheet
+  View, Text, FlatList, StyleSheet
 } from 'react-native';
 import SolChatSDK from '../SolChatSDK';
+import { TextInputField, PrimaryButton, useBackgroundSync } from '../../shared';
 
 export default function ChatThreadScreen({ route }) {
   const { wallet, peer, title } = route.params;
   const [session, setSession] = useState(null);
   const [msgs, setMsgs] = useState([]);
   const [draft, setDraft] = useState('');
+  useBackgroundSync();
 
   useEffect(() => {
     (async () => {
@@ -41,13 +43,12 @@ export default function ChatThreadScreen({ route }) {
         )}
       />
       <View style={styles.inputRow}>
-        <TextInput
-          style={styles.input}
+        <TextInputField
           value={draft}
           onChangeText={setDraft}
           placeholder="Type a message…"
         />
-        <Button title="Send" onPress={send} />
+        <PrimaryButton title="Send" onPress={send} />
       </View>
     </View>
   );
@@ -59,5 +60,5 @@ const styles = StyleSheet.create({
   msg:{marginVertical:5},
   sender:{fontWeight:'bold'},
   inputRow:{flexDirection:'row',alignItems:'center'},
-  input:{flex:1,borderWidth:1,borderColor:'#ccc',borderRadius:4,padding:8,marginRight:10}
-}); 
+  
+});

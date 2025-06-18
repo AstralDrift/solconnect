@@ -2,13 +2,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
-  TextInput,
   TouchableOpacity,
   FlatList,
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { TextInputField, PrimaryButton, useBackgroundSync } from '../../../shared';
 import type { Session, EncryptedMessage } from '../native/SolChatSDK';
 import SolChatSDK from '../native/SolChatSDK';
 
@@ -25,6 +25,7 @@ export const ChatThreadScreen: React.FC<ChatThreadScreenProps> = ({
   const [inputText, setInputText] = useState('');
   const [isSending, setIsSending] = useState(false);
   const flatListRef = useRef<FlatList>(null);
+  useBackgroundSync();
 
   useEffect(() => {
     // Initial message load
@@ -100,21 +101,17 @@ export const ChatThreadScreen: React.FC<ChatThreadScreenProps> = ({
       />
 
       <View style={styles.inputContainer}>
-        <TextInput
-          style={styles.input}
+        <TextInputField
           value={inputText}
           onChangeText={setInputText}
           placeholder="Type a message..."
-          placeholderTextColor="#999"
           multiline
         />
-        <TouchableOpacity
-          style={[styles.sendButton, !inputText.trim() && styles.sendButtonDisabled]}
+        <PrimaryButton
+          title="Send"
           onPress={handleSend}
           disabled={!inputText.trim() || isSending}
-        >
-          <Text style={styles.sendButtonText}>Send</Text>
-        </TouchableOpacity>
+        />
       </View>
     </KeyboardAvoidingView>
   );
@@ -179,27 +176,4 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: '#eee',
   },
-  input: {
-    flex: 1,
-    backgroundColor: '#f0f0f0',
-    borderRadius: 20,
-    paddingHorizontal: 15,
-    paddingVertical: 10,
-    marginRight: 10,
-    maxHeight: 100,
-  },
-  sendButton: {
-    backgroundColor: '#9945FF',
-    borderRadius: 20,
-    paddingHorizontal: 20,
-    justifyContent: 'center',
-  },
-  sendButtonDisabled: {
-    backgroundColor: '#ccc',
-  },
-  sendButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-}); 
+});

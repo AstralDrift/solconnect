@@ -2,11 +2,15 @@ import React, { useState } from 'react';
 import {
   View,
   Text,
-  TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
 } from 'react-native';
 import SolChatSDK from '../native/SolChatSDK';
+import {
+  PrimaryButton,
+  usePushNotifications,
+  authenticateBiometric,
+} from '../../../shared';
 
 interface LoginScreenProps {
   onLogin: (walletAddress: string) => void;
@@ -15,11 +19,17 @@ interface LoginScreenProps {
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pushToken = usePushNotifications();
 
   const handleLogin = async () => {
     setIsLoading(true);
     setError(null);
     try {
+      const bioOk = await authenticateBiometric('Login to SolConnect');
+      if (!bioOk) {
+        setError('Biometric authentication failed');
+        return;
+      }
       const walletAddress = await SolChatSDK.walletLogin();
       onLogin(walletAddress);
     } catch (err) {
@@ -34,18 +44,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
     <View style={styles.container}>
       <Text style={styles.title}>Welcome to SolConnect</Text>
       <Text style={styles.subtitle}>Secure, encrypted messaging on Solana</Text>
+      {pushToken && (
+        <Text style={styles.token} numberOfLines={1}>
+          Push Token: {pushToken}
+        </Text>
+      )}
       
-      <TouchableOpacity
-        style={styles.loginButton}
-        onPress={handleLogin}
-        disabled={isLoading}
-      >
-        {isLoading ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text style={styles.loginButtonText}>Login with Wallet</Text>
-        )}
-      </TouchableOpacity>
+      {isLoading ? (
+        <ActivityIndicator color="#9945FF" />
+      ) : (
+        <PrimaryButton title="Login with Wallet" onPress={handleLogin} />
+      )}
 
       {error && <Text style={styles.errorText}>{error}</Text>}
     </View>
@@ -72,22 +81,14 @@ const styles = StyleSheet.create({
     marginBottom: 40,
     textAlign: 'center',
   },
-  loginButton: {
-    backgroundColor: '#9945FF',
-    paddingHorizontal: 30,
-    paddingVertical: 15,
-    borderRadius: 25,
-    minWidth: 200,
-    alignItems: 'center',
-  },
-  loginButtonText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '600',
-  },
   errorText: {
     color: '#ff4444',
     marginTop: 20,
     textAlign: 'center',
   },
-}); 
+  token: {
+    fontSize: 10,
+    marginBottom: 10,
+    color: '#999',
+  },
+});
