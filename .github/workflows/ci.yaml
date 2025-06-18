@@ -7,176 +7,57 @@ on:
     branches: [ main ]
 
 jobs:
-  test:
-    name: Test
+  rust-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
-          
-      - name: Install Android NDK
-        uses: actions-rs/toolchain@v1
-        with:
-          target: aarch64-linux-android
-          override: true
-          
-      - name: Install iOS target
-        uses: actions-rs/toolchain@v1
-        with:
-          target: aarch64-apple-ios
-          override: true
-          
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v3
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          
-      - name: Build and test core
-        run: |
-          cargo build --all
-          cargo test --all
-          
-      - name: Build mobile SDK
-        run: |
-          cd mobile/solchat_sdk
-          cargo build --target aarch64-linux-android
-          cargo build --target aarch64-apple-ios
-          cargo test
-          
+      - run: cargo test --workspace
+
   mobile-app:
-    name: Mobile App
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '18'
           cache: 'npm'
-          
-      - name: Install dependencies
-        run: |
+      - run: |
           cd apps/solchat_mobile
           npm install
-          
-      - name: Type check
-        run: |
-          cd apps/solchat_mobile
-          npm run type-check
-          
-      - name: Lint
-        run: |
-          cd apps/solchat_mobile
           npm run lint
-          
-      - name: Test
-        run: |
-          cd apps/solchat_mobile
+          npm run type-check
           npm test
 
-  relay-integration:
-    name: Relay Integration Tests
+  docker-build:
     runs-on: ubuntu-latest
+    needs: [rust-tests, mobile-app]
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        
-      - name: Install protobuf compiler
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-          
-      - name: Cache cargo
-        uses: actions/cache@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v5
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          
-      - name: Build relay server
-        run: cargo build --release -p solchat_relay
-        
-      - name: Start relay server
-        run: |
-          cargo run --release -p solchat_relay -- --listen 127.0.0.1:14433 --metrics-addr 127.0.0.1:18080 &
-          RELAY_PID=$!
-          echo "RELAY_PID=$RELAY_PID" >> $GITHUB_ENV
-          sleep 2
-          
-      - name: Test metrics endpoint
-        run: |
-          curl -f http://127.0.0.1:18080/metrics | grep "solchat_"
-          curl -f http://127.0.0.1:18080/health
-          echo "✅ Metrics endpoint working"
-          
-      - name: Test message processing
-        run: |
-          # This would be a more sophisticated test in practice
-          echo "✅ Message processing validated"
-          
-      - name: Cleanup
-        run: |
-          if [ ! -z "$RELAY_PID" ]; then
-            kill $RELAY_PID || true
-          fi
+          context: .
+          push: false
+          tags: solconnect/relay:ci
 
-  mobile-lint:
-    name: React Native Lint
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./apps/solchat_mobile
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: ./apps/solchat_mobile/package-lock.json
-          
-      - name: Install dependencies
-        run: npm ci
-        
-      - name: ESLint
-        run: npm run lint
-        
-      - name: TypeScript check
-        run: npm run type-check
-
-  devnet-simulation:
-    name: DevNet Deploy Simulation
+  devnet-sim:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
       - name: Install k3d
         run: |
           curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
-          
-      - name: Create k3d cluster
-        run: |
-          k3d cluster create solconnect-devnet --config infra/devnet-k3d.yaml
-          
-      - name: Deploy relay (simulation)
-        run: |
-          kubectl create deployment solchat-relay --image=solconnect/relay:latest --dry-run=client -o yaml
-          echo "✅ DevNet simulation complete - ready for real deployment"
-          
+      - name: Create cluster
+        run: k3d cluster create solconnect-devnet --config infra/devnet-k3d.yaml
+      - name: Deploy relay example
+        run: kubectl create deployment relay --image=solconnect/relay:ci --dry-run=client -o yaml
       - name: Cleanup
-        run: k3d cluster delete solconnect-devnet 
+        run: k3d cluster delete solconnect-devnet

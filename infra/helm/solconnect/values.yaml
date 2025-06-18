@@ -1,0 +1,6 @@
+relay:
+  image: solconnect/relay:latest
+  replicas: 2
+web:
+  image: solconnect/web:latest
+  replicas: 2

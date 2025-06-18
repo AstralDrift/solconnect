@@ -227,4 +227,4 @@ Your existing Solana wallet keys are used to derive messaging keys via secure ke
 
 ---
 
-*Built with ❤️ for the Solana ecosystem* 
+*Built with ❤️ for the Solana ecosystem*

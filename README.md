@@ -148,3 +148,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 Built with ❤️ by the SolConnect team 
+For developer setup instructions see [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md).

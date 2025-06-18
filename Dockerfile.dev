@@ -1,16 +1,10 @@
-FROM rust:1.81.0-slim
+FROM node:18 as deps
+WORKDIR /workspace
+COPY SolConnectApp/package.json SolConnectApp/
+RUN cd SolConnectApp && npm install
 
-# Install system deps UniFFI might need
-RUN apt-get update && apt-get install -y \
-    libssl-dev clang cmake pkg-config protobuf-compiler
-
-# Install uniffi CLI
-RUN cargo install uniffi-cli --version 0.29.2
-
-WORKDIR /usr/src/solconnect
-
+FROM rust:1.81
+WORKDIR /workspace
 COPY . .
-
-# Drop into a shell in the SDK directory
-WORKDIR /usr/src/solconnect/mobile/solchat_sdk
-CMD ["/bin/bash"] 
+RUN cargo build --workspace
+CMD ["bash"]

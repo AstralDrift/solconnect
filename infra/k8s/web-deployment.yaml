@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: solchat-web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: solchat-web
+  template:
+    metadata:
+      labels:
+        app: solchat-web
+      annotations:
+        sidecar.istio.io/inject: "true"
+    spec:
+      containers:
+        - name: web
+          image: solconnect/web:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NEXT_PUBLIC_RELAY_URL
+              value: ws://solchat-relay
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: solchat-web
+spec:
+  selector:
+    app: solchat-web
+  ports:
+    - port: 80
+      targetPort: 3000

@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: solchat-relay
+spec:
+  replicas: {{ .Values.relay.replicas }}
+  selector:
+    matchLabels:
+      app: solchat-relay
+  template:
+    metadata:
+      labels:
+        app: solchat-relay
+    spec:
+      containers:
+        - name: relay
+          image: {{ .Values.relay.image }}
+          ports:
+            - containerPort: 8080

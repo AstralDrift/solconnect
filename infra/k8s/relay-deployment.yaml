@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: solchat-relay
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: solchat-relay
+  template:
+    metadata:
+      labels:
+        app: solchat-relay
+      annotations:
+        sidecar.istio.io/inject: "true"
+    spec:
+      containers:
+        - name: relay
+          image: solconnect/relay:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: RUST_LOG
+              value: info
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: solchat-relay
+spec:
+  selector:
+    app: solchat-relay
+  ports:
+    - port: 80
+      targetPort: 8080

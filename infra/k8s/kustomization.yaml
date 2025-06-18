@@ -1,0 +1,3 @@
+resources:
+  - relay-deployment.yaml
+  - web-deployment.yaml
