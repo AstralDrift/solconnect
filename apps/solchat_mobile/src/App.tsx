@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { SafeAreaView, StyleSheet } from 'react-native';
+import { usePushNotifications } from './hooks/usePushNotifications';
 import { LoginScreen } from './screens/LoginScreen';
 import { ChatListScreen } from './screens/ChatListScreen';
 import { ChatThreadScreen } from './screens/ChatThreadScreen';
@@ -11,6 +12,8 @@ export default function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('login');
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [currentSession, setCurrentSession] = useState<Session | null>(null);
+
+  usePushNotifications();
 
   const handleLogin = (address: string) => {
     setWalletAddress(address);

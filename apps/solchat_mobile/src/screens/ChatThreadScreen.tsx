@@ -2,13 +2,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
-  TextInput,
-  TouchableOpacity,
   FlatList,
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { ThemedHeader } from '../../../mobile/components/ThemedHeader';
+import { ThemedTextInput } from '../../../mobile/components/ThemedTextInput';
+import { ThemedButton } from '../../../mobile/components/ThemedButton';
 import type { Session, EncryptedMessage } from '../native/SolChatSDK';
 import SolChatSDK from '../native/SolChatSDK';
 
@@ -83,12 +84,7 @@ export const ChatThreadScreen: React.FC<ChatThreadScreenProps> = ({
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
-      <View style={styles.header}>
-        <TouchableOpacity onPress={onBack} style={styles.backButton}>
-          <Text style={styles.backButtonText}>← Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.peerWallet}>{session.peerWallet}</Text>
-      </View>
+      <ThemedHeader title={session.peerWallet} onBack={onBack} />
 
       <FlatList
         ref={flatListRef}
@@ -100,21 +96,19 @@ export const ChatThreadScreen: React.FC<ChatThreadScreenProps> = ({
       />
 
       <View style={styles.inputContainer}>
-        <TextInput
+        <ThemedTextInput
           style={styles.input}
           value={inputText}
           onChangeText={setInputText}
           placeholder="Type a message..."
-          placeholderTextColor="#999"
           multiline
         />
-        <TouchableOpacity
-          style={[styles.sendButton, !inputText.trim() && styles.sendButtonDisabled]}
+        <ThemedButton
+          title="Send"
           onPress={handleSend}
           disabled={!inputText.trim() || isSending}
-        >
-          <Text style={styles.sendButtonText}>Send</Text>
-        </TouchableOpacity>
+          style={[styles.sendButton, !inputText.trim() && styles.sendButtonDisabled]}
+        />
       </View>
     </KeyboardAvoidingView>
   );
@@ -124,26 +118,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f5f5f5',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 15,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
-  },
-  backButton: {
-    marginRight: 15,
-  },
-  backButtonText: {
-    fontSize: 16,
-    color: '#9945FF',
-  },
-  peerWallet: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
   },
   messagesList: {
     padding: 15,
