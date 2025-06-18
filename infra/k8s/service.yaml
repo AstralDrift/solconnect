@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: solconnect-relay
+spec:
+  selector:
+    app: solconnect-relay
+  ports:
+    - port: 8080
+      targetPort: 8080

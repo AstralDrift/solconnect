@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "solconnect.fullname" . }}
+  labels:
+    app: {{ include "solconnect.name" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "solconnect.name" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "solconnect.name" . }}
+    spec:
+      containers:
+        - name: relay
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          ports:
+            - containerPort: {{ .Values.service.port }}

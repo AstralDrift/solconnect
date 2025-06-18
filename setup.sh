@@ -86,10 +86,13 @@ install_nodejs() {
                 ;;
         esac
     fi
-    
+
     # Configure npm cache
     mkdir -p "${CACHE_DIR}/npm"
     npm config set cache "${CACHE_DIR}/npm"
+
+    # Useful global tools
+    npm install -g yarn
 }
 
 # Install Solana CLI
@@ -118,6 +121,13 @@ install_docker() {
                 sudo usermod -aG docker "$USER"
                 ;;
         esac
+    fi
+}
+
+# Install k3d for local Kubernetes
+install_k3d() {
+    if ! command -v k3d >/dev/null 2>&1; then
+        curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
     fi
 }
 
@@ -179,6 +189,7 @@ main() {
     install_nodejs
     install_solana_cli
     install_docker
+    install_k3d
     install_project_dependencies
     configure_environment
     
