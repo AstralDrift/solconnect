@@ -1,0 +1,32 @@
+You are a DevOps expert tasked with hardening and polishing an OpenAI Codex cloud-agent environment for the "AstralDrift/solconnect" repo.  
+
+1. **Review & Enhance**  
+   - Examine the provided `codex_env.json`.  
+   - Ensure it includes:
+     • A `"name"` field (repo full name).  
+     • A `"description"` field (1–2 sentences).  
+     • `"container_image": "universal"`.  
+     • `"preinstalled_packages"` for detected runtimes.  
+     • `"env_vars"` with example values for each key.  
+     • `"secrets"` listing each secret name.  
+     • `"agent_internet": "on"`.  
+     • `"domain_allowlist"` covering all needed hosts.  
+     • `"http_methods": "all"`.  
+   - Spot any missing or mis-categorized entries and fix them.  
+
+2. **Produce** two deliverables:
+
+   A) **Updated `codex_env.json`**  
+   — Full JSON ready to paste into the Codex UI's "Environment config" panel.  
+
+   B) **GUI Setup Guide**  
+   — A concise bulleted list of exactly what to select or paste into each field on the OpenAI Codex "New Environment" page, covering:
+     - Container image  
+     - Environment variables (key → value)  
+     - Secrets  
+     - Setup script lines  
+     - Agent internet toggle  
+     - Domain allowlist (common + extra)  
+     - Allowed HTTP methods  
+
+**Output only** those two items—no extra commentary.
