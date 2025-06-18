@@ -7,6 +7,7 @@ import {
   StyleSheet,
   ActivityIndicator,
 } from 'react-native';
+import { ThemedHeader } from '../../../mobile/components/ThemedHeader';
 import type { Session } from '../native/SolChatSDK';
 
 interface ChatListScreenProps {
@@ -58,12 +59,9 @@ export const ChatListScreen: React.FC<ChatListScreenProps> = ({
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Your Chats</Text>
-        <Text style={styles.walletAddress}>
-          Wallet: {walletAddress.slice(0, 6)}...{walletAddress.slice(-4)}
-        </Text>
-      </View>
+      <ThemedHeader
+        title={`Wallet: ${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`}
+      />
 
       {chats.length === 0 ? (
         <View style={styles.emptyContainer}>
@@ -92,22 +90,6 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  header: {
-    padding: 20,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#333',
-  },
-  walletAddress: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 5,
   },
   list: {
     padding: 10,
