@@ -5,10 +5,14 @@
 
 import { ChatSession, Message } from '../types';
 import { SolConnectError, ErrorCode, Result, createResult } from '../types/errors';
-import { MessageTransport, TransportFactory, DeliveryReceipt, MessageHandler, Subscription } from './transport/MessageTransport';
+import { MessageTransport, TransportFactory, DeliveryReceipt, MessageHandler, Subscription, WebSocketTransport } from './transport/MessageTransport';
 import { MessageStorage, getMessageStorage } from './storage/MessageStorage';
 import { NetworkStateManager, getNetworkStateManager, NetworkState } from './network/NetworkStateManager';
 import { Logger } from './monitoring/Logger';
+import { SyncManager, getSyncManager } from './sync/SyncManager';
+import { WebSocketSyncTransport } from './sync/WebSocketSyncTransport';
+import { DatabaseService } from './database/DatabaseService';
+import { EncryptionService, initializeEncryptionService, getEncryptionService } from './crypto/EncryptionService';
 
 export interface MessageBusConfig {
   relayEndpoint: string;
@@ -19,6 +23,7 @@ export interface MessageBusConfig {
   enablePersistence?: boolean;
   enableNetworkManager?: boolean;
   deviceId?: string;
+  encryptionPassword?: string; // Password for key storage encryption
 }
 
 export interface MessageBusState {
@@ -28,6 +33,11 @@ export interface MessageBusState {
   queuedMessageCount: number;
   lastSyncAt?: Date;
   syncInProgress: boolean;
+}
+
+export interface MessageInterceptor {
+  beforeSend?: (session: ChatSession, message: string) => Promise<Result<string>>;
+  afterReceive?: (message: Message) => Promise<Result<Message>>;
 }
 
 /**
@@ -43,6 +53,10 @@ export class MessageBus {
   private storage?: MessageStorage;
   private networkManager?: NetworkStateManager;
   private deviceId: string;
+  private syncManager?: SyncManager;
+  private database?: DatabaseService;
+  private encryptionService?: EncryptionService;
+  private messageInterceptor?: MessageInterceptor;
   
   // Sync state
   private syncInProgress = false;
@@ -62,6 +76,7 @@ export class MessageBus {
       enablePersistence: true,
       enableNetworkManager: true,
       deviceId: this.generateDeviceId(),
+      encryptionPassword: undefined,
       ...config
     };
 
@@ -72,7 +87,7 @@ export class MessageBus {
   /**
    * Initialize the message bus and establish connection
    */
-  async initialize(): Promise<Result<void>> {
+  async initialize(database?: DatabaseService, walletAddress?: string): Promise<Result<void>> {
     if (this.isInitialized) {
       return createResult.success(undefined);
     }
@@ -80,8 +95,29 @@ export class MessageBus {
     try {
       this.logger.info('Initializing MessageBus with offline sync', {
         deviceId: this.deviceId,
-        enableNetworkManager: this.config.enableNetworkManager
+        enableNetworkManager: this.config.enableNetworkManager,
+        enableEncryption: this.config.enableEncryption
       });
+
+      this.database = database;
+
+      // Initialize encryption if enabled and wallet address provided
+      if (this.config.enableEncryption && walletAddress) {
+        const encryptionResult = await initializeEncryptionService(
+          walletAddress,
+          database,
+          { keyStoragePassword: this.config.encryptionPassword }
+        );
+        
+        if (!encryptionResult.success) {
+          this.logger.warn('Failed to initialize encryption service:', encryptionResult.error);
+          // Continue without encryption
+        } else {
+          this.encryptionService = encryptionResult.data!;
+          this.messageInterceptor = this.encryptionService.createMessageInterceptor();
+          this.logger.info('Encryption service initialized successfully');
+        }
+      }
 
       // Initialize storage if persistence is enabled
       if (this.config.enablePersistence) {
@@ -112,6 +148,16 @@ export class MessageBus {
       if (!connectionResult.success) {
         this.logger.warn('Initial transport connection failed, will retry when online:', connectionResult.error);
         // Continue initialization even if connection fails - we'll retry when online
+      }
+
+      // Initialize sync manager
+      this.syncManager = getSyncManager();
+      if (this.transport instanceof WebSocketTransport) {
+        const syncTransport = new WebSocketSyncTransport(this.transport);
+        const syncResult = await this.syncManager.initialize(this.database, syncTransport);
+        if (!syncResult.success) {
+          this.logger.warn('Failed to initialize sync manager:', syncResult.error);
+        }
       }
 
       this.isInitialized = true;
@@ -146,9 +192,20 @@ export class MessageBus {
       const messageId = this.generateMessageId();
       const timestamp = new Date();
       
+      // Apply message interceptor if available (for encryption)
+      let processedMessage = message;
+      if (this.messageInterceptor?.beforeSend) {
+        const interceptResult = await this.messageInterceptor.beforeSend(session, message);
+        if (!interceptResult.success) {
+          this.logger.error('Message interceptor failed', interceptResult.error);
+          return createResult.error(interceptResult.error!);
+        }
+        processedMessage = interceptResult.data!;
+      }
+      
       const messageObj: Message = {
         sender_wallet: session.peer_wallet, // This should be current user's wallet
-        ciphertext: message,
+        ciphertext: processedMessage,
         timestamp: timestamp.toISOString(),
         session_id: session.session_id,
         content_type: 'text'
@@ -171,7 +228,7 @@ export class MessageBus {
       // Try to send immediately if online and connected
       if (this.isOnline() && this.transport.isConnected) {
         try {
-          const sendResult = await this.transport.send(session, message);
+          const sendResult = await this.transport.send(session, processedMessage);
           
           if (sendResult.success) {
             // Update message status to sent
@@ -232,19 +289,52 @@ export class MessageBus {
    */
   subscribe(sessionId: string, handler: MessageHandler): Result<Subscription> {
     try {
-      const subscription = this.transport.subscribe(sessionId, (message) => {
+      const subscription = this.transport.subscribe(sessionId, async (message) => {
+        // Apply message interceptor if available (for decryption)
+        let processedMessage = message;
+        if (this.messageInterceptor?.afterReceive) {
+          const interceptResult = await this.messageInterceptor.afterReceive(message);
+          if (!interceptResult.success) {
+            this.logger.warn('Failed to process received message', interceptResult.error);
+            // Continue with original message
+          } else {
+            processedMessage = interceptResult.data!;
+          }
+        }
+        
         // Store received message
         if (this.storage) {
-          this.storage.storeMessage(sessionId, message, 'remote-device')
+          this.storage.storeMessage(sessionId, processedMessage, 'remote-device')
             .catch(error => this.logger.error('Failed to store received message', error));
         }
         
-        // Call handler
-        handler(message);
+        // Call handler with processed message
+        handler(processedMessage);
       });
 
       this.subscriptions.set(subscription.id, subscription);
       this.logger.info('Subscribed to session messages', { sessionId, subscriptionId: subscription.id });
+      
+      // Start sync for this session if sync manager is available
+      if (this.syncManager) {
+        // Create a minimal session object for sync
+        const session: ChatSession = {
+          session_id: sessionId,
+          peer_wallet: '',  // Will be populated from actual messages
+          sharedKey: new Uint8Array(32)
+        };
+        
+        this.syncManager.startSync(session).then(result => {
+          if (!result.success) {
+            this.logger.warn('Failed to start sync for session', { 
+              sessionId, 
+              error: result.error 
+            });
+          } else {
+            this.logger.info('Started sync for session', { sessionId });
+          }
+        });
+      }
       
       return createResult.success(subscription);
     } catch (error) {
@@ -309,14 +399,44 @@ export class MessageBus {
       let syncedCount = 0;
 
       if (sessionId) {
-        // Sync specific session
-        const sessionSyncResult = await this.syncSessionMessages(sessionId);
-        if (sessionSyncResult.success) {
-          syncedCount = sessionSyncResult.data!;
+        // Use sync manager if available
+        if (this.syncManager) {
+          const syncResult = await this.syncManager.syncSession(sessionId);
+          if (syncResult.success) {
+            const stats = syncResult.data!;
+            syncedCount = stats.totalMessagesSynced;
+            this.logger.info('Sync completed via SyncManager', { sessionId, stats });
+          } else {
+            return createResult.error(syncResult.error!);
+          }
+        } else {
+          // Fallback to old sync method
+          const sessionSyncResult = await this.syncSessionMessages(sessionId);
+          if (sessionSyncResult.success) {
+            syncedCount = sessionSyncResult.data!;
+          }
         }
       } else {
-        // Sync all sessions (placeholder - would need server API to list sessions)
-        this.logger.info('Full sync not implemented yet - sync specific sessions');
+        // Sync all sessions
+        if (this.syncManager) {
+          // Get all active sessions from subscriptions
+          const sessionIds = new Set<string>();
+          for (const [subId] of this.subscriptions) {
+            const match = subId.match(/^(.+)-\d+$/);
+            if (match) {
+              sessionIds.add(match[1]);
+            }
+          }
+          
+          for (const sid of sessionIds) {
+            const result = await this.syncManager.syncSession(sid);
+            if (result.success) {
+              syncedCount += result.data!.totalMessagesSynced;
+            }
+          }
+        } else {
+          this.logger.info('Full sync not implemented yet - sync specific sessions');
+        }
       }
 
       this.lastSyncAt = new Date();
@@ -514,6 +634,25 @@ export class MessageBus {
   async disconnect(): Promise<Result<void>> {
     try {
       this.logger.info('Disconnecting MessageBus');
+
+      // Stop all sync operations
+      if (this.syncManager) {
+        // Stop sync for all active sessions
+        const sessionIds = new Set<string>();
+        for (const [subId] of this.subscriptions) {
+          const match = subId.match(/^(.+)-\d+$/);
+          if (match) {
+            sessionIds.add(match[1]);
+          }
+        }
+        
+        for (const sessionId of sessionIds) {
+          await this.syncManager.stopSync(sessionId);
+        }
+        
+        // Shutdown sync manager
+        await this.syncManager.shutdown();
+      }
 
       // Unsubscribe all
       for (const subscriptionId of this.subscriptions.keys()) {

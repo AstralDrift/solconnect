@@ -16,6 +16,8 @@ export interface Message {
   sender_wallet: string;
   ciphertext: string;
   timestamp?: string;
+  session_id?: string;
+  content_type?: string;
 }
 
 export type RootStackParamList = {

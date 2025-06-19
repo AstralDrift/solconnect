@@ -19,6 +19,7 @@ export enum ErrorCode {
   RELAY_DISCONNECTED = 'RELAY_DISCONNECTED',
   
   // Crypto errors
+  CRYPTO_ERROR = 'CRYPTO_ERROR',
   ENCRYPTION_FAILED = 'ENCRYPTION_FAILED',
   DECRYPTION_FAILED = 'DECRYPTION_FAILED',
   INVALID_KEY = 'INVALID_KEY',
@@ -36,7 +37,8 @@ export enum ErrorCode {
   
   // System errors
   STORAGE_ERROR = 'STORAGE_ERROR',
-  UNKNOWN_ERROR = 'UNKNOWN_ERROR'
+  UNKNOWN_ERROR = 'UNKNOWN_ERROR',
+  NOT_IMPLEMENTED = 'NOT_IMPLEMENTED'
 }
 
 export interface AppError {
@@ -83,6 +85,10 @@ export class SolConnectError extends Error implements AppError {
 
   static system(code: ErrorCode, message: string, userMessage: string, context?: Record<string, any>): SolConnectError {
     return new SolConnectError(ErrorCategory.SYSTEM, code, message, userMessage, false, context);
+  }
+
+  static security(code: ErrorCode, message: string, userMessage: string, context?: Record<string, any>): SolConnectError {
+    return new SolConnectError(ErrorCategory.CRYPTO, code, message, userMessage, false, context);
   }
 
   toJSON(): AppError {

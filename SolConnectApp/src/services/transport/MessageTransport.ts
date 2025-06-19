@@ -5,20 +5,12 @@
 
 import { ChatSession, Message } from '../../types';
 import { SolConnectError, ErrorCode, ErrorCategory, Result, createResult } from '../../types/errors';
+import { AnySyncMessage, SyncMessageType } from '../sync/SyncProtocol';
 
 export interface DeliveryReceipt {
   messageId: string;
   timestamp: number;
   status: 'sent' | 'delivered' | 'failed';
-}
-
-export interface MessageHandler {
-  (message: Message): void;
-}
-
-export interface Subscription {
-  id: string;
-  unsubscribe: () => void;
 }
 
 export interface Connection {
@@ -27,15 +19,25 @@ export interface Connection {
   close: () => Promise<void>;
 }
 
+export interface Subscription {
+  id: string;
+  unsubscribe: () => void;
+}
+
+export type MessageHandler = (message: Message) => void;
+export type SyncMessageHandler = (message: AnySyncMessage) => void;
+
 /**
  * Abstract message transport interface
  */
 export abstract class MessageTransport {
   protected handlers = new Map<string, MessageHandler>();
+  protected syncHandlers = new Set<SyncMessageHandler>();
   protected connection: Connection | null = null;
 
   abstract connect(endpoint: string): Promise<Result<Connection>>;
   abstract send(session: ChatSession, message: string): Promise<Result<DeliveryReceipt>>;
+  abstract sendSyncMessage(message: AnySyncMessage): Promise<Result<void>>;
   abstract disconnect(): Promise<Result<void>>;
 
   /**
@@ -51,6 +53,20 @@ export abstract class MessageTransport {
         this.handlers.delete(subscriptionId);
       }
     };
+  }
+
+  /**
+   * Subscribe to sync messages
+   */
+  onSyncMessage(handler: SyncMessageHandler): void {
+    this.syncHandlers.add(handler);
+  }
+
+  /**
+   * Unsubscribe from sync messages
+   */
+  offSyncMessage(handler: SyncMessageHandler): void {
+    this.syncHandlers.delete(handler);
   }
 
   /**
@@ -76,6 +92,17 @@ export abstract class MessageTransport {
         } catch (error) {
           console.error('Error in message handler:', error);
         }
+      }
+    }
+  }
+
+  protected handleIncomingSyncMessage(message: AnySyncMessage): void {
+    // Notify all sync handlers
+    for (const handler of this.syncHandlers) {
+      try {
+        handler(message);
+      } catch (error) {
+        console.error('Error in sync message handler:', error);
       }
     }
   }
@@ -137,6 +164,13 @@ export class WebSocketTransport extends MessageTransport {
         this.ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
+            
+            // Check if this is a sync message
+            if (data.type && Object.values(SyncMessageType).includes(data.type)) {
+              this.handleIncomingSyncMessage(data as AnySyncMessage);
+              return;
+            }
+            
             if (data.error) {
               console.error('WebSocket error message:', data.error);
               return;
@@ -147,7 +181,7 @@ export class WebSocketTransport extends MessageTransport {
               sender_wallet: data.sender || 'unknown',
               ciphertext: data.text || data.message || '',
               timestamp: data.timestamp || new Date().toISOString(),
-              session_id: data.room || data.sessionId
+              session_id: data.room || data.sessionId || data.roomId
             };
 
             this.handleIncomingMessage(message);
@@ -240,6 +274,28 @@ export class WebSocketTransport extends MessageTransport {
     }
   }
 
+  async sendSyncMessage(message: AnySyncMessage): Promise<Result<void>> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return createResult.error(SolConnectError.network(
+        ErrorCode.RELAY_DISCONNECTED,
+        'WebSocket not connected',
+        'Not connected to sync service'
+      ));
+    }
+
+    try {
+      this.ws.send(JSON.stringify(message));
+      return createResult.success(undefined);
+    } catch (error) {
+      return createResult.error(SolConnectError.network(
+        ErrorCode.CONNECTION_FAILED,
+        `Failed to send sync message: ${error}`,
+        'Failed to send sync message',
+        { error: error?.toString() }
+      ));
+    }
+  }
+
   async disconnect(): Promise<Result<void>> {
     try {
       if (this.ws) {
@@ -249,6 +305,7 @@ export class WebSocketTransport extends MessageTransport {
       
       this.connection = null;
       this.handlers.clear();
+      this.syncHandlers.clear();
       
       return createResult.success(undefined);
     } catch (error) {
@@ -354,6 +411,14 @@ export class QuicTransport extends MessageTransport {
       'QUIC transport not yet implemented',
       'QUIC transport is not available yet. Please use WebSocket transport for now.',
       { sessionId: session.session_id }
+    ));
+  }
+
+  async sendSyncMessage(message: AnySyncMessage): Promise<Result<void>> {
+    return createResult.error(SolConnectError.network(
+      ErrorCode.CONNECTION_FAILED,
+      'QUIC transport not yet implemented',
+      'QUIC transport is not available yet. Please use WebSocket transport for now.'
     ));
   }
 
