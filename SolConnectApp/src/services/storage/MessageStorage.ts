@@ -1,6 +1,6 @@
 /**
  * Message Storage Service
- * Provides encrypted local storage for messages with cross-platform support
+ * Provides encrypted local storage for messages with cross-platform support and offline queue management
  */
 
 import { Message, ChatSession } from '../../types';
@@ -9,8 +9,36 @@ import { SolConnectError, ErrorCode, Result, createResult } from '../../types/er
 interface StoredMessage extends Message {
   id: string;
   sessionId: string;
+  sequenceNumber?: number;
+  deviceId?: string;
   isLocal?: boolean;
-  deliveryStatus?: 'pending' | 'sent' | 'delivered' | 'failed';
+  deliveryStatus: 'queued' | 'pending' | 'sent' | 'delivered' | 'failed';
+  queuedAt?: Date;
+  sentAt?: Date;
+  deliveredAt?: Date;
+  failedAt?: Date;
+  retryCount: number;
+  lastRetryAt?: Date;
+  errorMessage?: string;
+}
+
+interface QueuedMessage extends StoredMessage {
+  priority: number; // Higher priority = sent first
+  maxRetries: number;
+  nextRetryAt?: Date;
+}
+
+interface OfflineQueue {
+  sessionId: string;
+  messages: QueuedMessage[];
+  lastProcessedAt?: Date;
+  processingEnabled: boolean;
+}
+
+interface NetworkState {
+  online: boolean;
+  lastStateChange: Date;
+  connectionQuality?: 'poor' | 'good' | 'excellent';
 }
 
 interface StorageAdapter {
@@ -73,11 +101,17 @@ class MobileStorageAdapter implements StorageAdapter {
 
   constructor() {
     // Dynamic import to avoid issues in web environment
-    this.AsyncStorage = require('@react-native-async-storage/async-storage').default;
+    try {
+      this.AsyncStorage = require('@react-native-async-storage/async-storage').default;
+    } catch (error) {
+      console.warn('AsyncStorage not available, falling back to web storage');
+      // Fallback to web storage in development
+    }
   }
 
   async getItem(key: string): Promise<string | null> {
     try {
+      if (!this.AsyncStorage) return null;
       return await this.AsyncStorage.getItem(this.prefix + key);
     } catch (error) {
       console.error('Error reading from AsyncStorage:', error);
@@ -87,6 +121,7 @@ class MobileStorageAdapter implements StorageAdapter {
 
   async setItem(key: string, value: string): Promise<void> {
     try {
+      if (!this.AsyncStorage) throw new Error('AsyncStorage not available');
       await this.AsyncStorage.setItem(this.prefix + key, value);
     } catch (error) {
       console.error('Error writing to AsyncStorage:', error);
@@ -96,6 +131,7 @@ class MobileStorageAdapter implements StorageAdapter {
 
   async removeItem(key: string): Promise<void> {
     try {
+      if (!this.AsyncStorage) return;
       await this.AsyncStorage.removeItem(this.prefix + key);
     } catch (error) {
       console.error('Error removing from AsyncStorage:', error);
@@ -104,6 +140,7 @@ class MobileStorageAdapter implements StorageAdapter {
 
   async getAllKeys(): Promise<string[]> {
     try {
+      if (!this.AsyncStorage) return [];
       const allKeys = await this.AsyncStorage.getAllKeys();
       return allKeys
         .filter((key: string) => key.startsWith(this.prefix))
@@ -116,14 +153,29 @@ class MobileStorageAdapter implements StorageAdapter {
 }
 
 /**
- * Message storage service with encryption and cross-platform support
+ * Message storage service with encryption, cross-platform support, and offline queue management
  */
 export class MessageStorage {
   private adapter: StorageAdapter;
   private encryptionKey?: Uint8Array;
   private messageCache = new Map<string, StoredMessage[]>();
+  private offlineQueues = new Map<string, OfflineQueue>();
   private maxMessagesPerSession = 1000;
+  private maxQueueSize = 500;
+  private maxRetries = 3;
   private syncInterval?: NodeJS.Timeout;
+  private queueProcessingInterval?: NodeJS.Timeout;
+  private networkState: NetworkState = {
+    online: typeof navigator !== 'undefined' ? navigator.onLine : true,
+    lastStateChange: new Date()
+  };
+  
+  // Event listeners for network state changes
+  private onlineListener?: () => void;
+  private offlineListener?: () => void;
+
+  // Queue processing callbacks
+  private queueProcessors: Array<(sessionId: string, messages: QueuedMessage[]) => Promise<void>> = [];
 
   constructor() {
     // Select appropriate storage adapter based on platform
@@ -132,6 +184,8 @@ export class MessageStorage {
     } else {
       this.adapter = new MobileStorageAdapter();
     }
+
+    this.setupNetworkStateListeners();
   }
 
   /**
@@ -141,11 +195,13 @@ export class MessageStorage {
     try {
       this.encryptionKey = encryptionKey;
       
-      // Load existing messages into cache
+      // Load existing messages and queues into cache
       await this.loadAllMessages();
+      await this.loadOfflineQueues();
       
-      // Start periodic sync
+      // Start periodic sync and queue processing
       this.startPeriodicSync();
+      this.startQueueProcessing();
       
       return createResult.success(undefined);
     } catch (error) {
@@ -159,15 +215,18 @@ export class MessageStorage {
   }
 
   /**
-   * Store a message
+   * Store a message (will queue if offline)
    */
-  async storeMessage(sessionId: string, message: Message): Promise<Result<StoredMessage>> {
+  async storeMessage(sessionId: string, message: Message, deviceId?: string): Promise<Result<StoredMessage>> {
     try {
       const storedMessage: StoredMessage = {
         ...message,
         id: this.generateMessageId(),
         sessionId,
-        deliveryStatus: 'sent'
+        deviceId,
+        deliveryStatus: this.networkState.online ? 'pending' : 'queued',
+        queuedAt: new Date(),
+        retryCount: 0
       };
 
       // Add to cache
@@ -180,6 +239,11 @@ export class MessageStorage {
       }
       
       this.messageCache.set(sessionId, messages);
+
+      // Add to queue if offline or high priority
+      if (!this.networkState.online || this.shouldQueue(message)) {
+        await this.addToQueue(sessionId, storedMessage);
+      }
 
       // Persist to storage
       await this.persistSession(sessionId, messages);
@@ -198,13 +262,16 @@ export class MessageStorage {
   /**
    * Store multiple messages
    */
-  async storeMessages(sessionId: string, messages: Message[]): Promise<Result<StoredMessage[]>> {
+  async storeMessages(sessionId: string, messages: Message[], deviceId?: string): Promise<Result<StoredMessage[]>> {
     try {
       const storedMessages: StoredMessage[] = messages.map(msg => ({
         ...msg,
         id: this.generateMessageId(),
         sessionId,
-        deliveryStatus: 'sent' as const
+        deviceId,
+        deliveryStatus: this.networkState.online ? 'pending' : 'queued',
+        queuedAt: new Date(),
+        retryCount: 0
       }));
 
       // Update cache
@@ -218,6 +285,13 @@ export class MessageStorage {
       
       this.messageCache.set(sessionId, allMessages);
 
+      // Add to queue if offline
+      if (!this.networkState.online) {
+        for (const message of storedMessages) {
+          await this.addToQueue(sessionId, message);
+        }
+      }
+
       // Persist to storage
       await this.persistSession(sessionId, allMessages);
 
@@ -227,6 +301,64 @@ export class MessageStorage {
         ErrorCode.STORAGE_ERROR,
         `Failed to store messages: ${error}`,
         'Failed to save messages',
+        { error: error?.toString() }
+      ));
+    }
+  }
+
+  /**
+   * Update message delivery status
+   */
+  async updateMessageStatus(
+    sessionId: string, 
+    messageId: string, 
+    status: StoredMessage['deliveryStatus'],
+    error?: string
+  ): Promise<Result<void>> {
+    try {
+      const messages = this.messageCache.get(sessionId) || [];
+      const messageIndex = messages.findIndex(m => m.id === messageId);
+      
+      if (messageIndex === -1) {
+        return createResult.error(SolConnectError.validation(
+          ErrorCode.INVALID_MESSAGE_FORMAT,
+          'Message not found',
+          'Message not found in storage'
+        ));
+      }
+
+      const message = messages[messageIndex];
+      message.deliveryStatus = status;
+      
+      switch (status) {
+        case 'sent':
+          message.sentAt = new Date();
+          break;
+        case 'delivered':
+          message.deliveredAt = new Date();
+          break;
+        case 'failed':
+          message.failedAt = new Date();
+          message.errorMessage = error;
+          message.retryCount++;
+          break;
+      }
+
+      messages[messageIndex] = message;
+      this.messageCache.set(sessionId, messages);
+
+      // Update queue if message is queued
+      await this.updateQueuedMessage(sessionId, messageId, status, error);
+
+      // Persist changes
+      await this.persistSession(sessionId, messages);
+
+      return createResult.success(undefined);
+    } catch (error) {
+      return createResult.error(SolConnectError.system(
+        ErrorCode.STORAGE_ERROR,
+        `Failed to update message status: ${error}`,
+        'Failed to update message status',
         { error: error?.toString() }
       ));
     }
@@ -268,37 +400,172 @@ export class MessageStorage {
   }
 
   /**
-   * Update message delivery status
+   * Get all queued messages (ready to send when online)
    */
-  async updateMessageStatus(
-    sessionId: string, 
-    messageId: string, 
-    status: 'sent' | 'delivered' | 'failed'
-  ): Promise<Result<void>> {
+  async getQueuedMessages(sessionId?: string): Promise<Result<QueuedMessage[]>> {
     try {
-      const messages = this.messageCache.get(sessionId);
-      if (!messages) {
-        return createResult.error(SolConnectError.validation(
-          ErrorCode.INVALID_MESSAGE_FORMAT,
-          'Session not found',
-          'Message session not found'
-        ));
+      const queuedMessages: QueuedMessage[] = [];
+      
+      if (sessionId) {
+        const queue = this.offlineQueues.get(sessionId);
+        if (queue) {
+          queuedMessages.push(...queue.messages);
+        }
+      } else {
+        // Get all queued messages across all sessions
+        for (const queue of this.offlineQueues.values()) {
+          queuedMessages.push(...queue.messages);
+        }
       }
 
-      const message = messages.find(m => m.id === messageId);
-      if (message) {
-        message.deliveryStatus = status;
-        await this.persistSession(sessionId, messages);
+      // Sort by priority and queued time
+      queuedMessages.sort((a, b) => {
+        if (a.priority !== b.priority) {
+          return b.priority - a.priority; // Higher priority first
+        }
+        return (a.queuedAt?.getTime() || 0) - (b.queuedAt?.getTime() || 0); // Older first
+      });
+
+      return createResult.success(queuedMessages);
+    } catch (error) {
+      return createResult.error(SolConnectError.system(
+        ErrorCode.STORAGE_ERROR,
+        `Failed to get queued messages: ${error}`,
+        'Failed to retrieve queued messages',
+        { error: error?.toString() }
+      ));
+    }
+  }
+
+  /**
+   * Remove message from queue (after successful sending)
+   */
+  async removeFromQueue(sessionId: string, messageId: string): Promise<Result<void>> {
+    try {
+      const queue = this.offlineQueues.get(sessionId);
+      if (!queue) {
+        return createResult.success(undefined);
+      }
+
+      queue.messages = queue.messages.filter(m => m.id !== messageId);
+      
+      if (queue.messages.length === 0) {
+        this.offlineQueues.delete(sessionId);
+        await this.adapter.removeItem(`queue_${sessionId}`);
+      } else {
+        await this.persistQueue(sessionId, queue);
       }
 
       return createResult.success(undefined);
     } catch (error) {
       return createResult.error(SolConnectError.system(
         ErrorCode.STORAGE_ERROR,
-        `Failed to update message status: ${error}`,
-        'Failed to update message status',
+        `Failed to remove message from queue: ${error}`,
+        'Failed to remove queued message',
         { error: error?.toString() }
       ));
+    }
+  }
+
+  /**
+   * Clear all queued messages for a session
+   */
+  async clearQueue(sessionId: string): Promise<Result<void>> {
+    try {
+      this.offlineQueues.delete(sessionId);
+      await this.adapter.removeItem(`queue_${sessionId}`);
+      return createResult.success(undefined);
+    } catch (error) {
+      return createResult.error(SolConnectError.system(
+        ErrorCode.STORAGE_ERROR,
+        `Failed to clear queue: ${error}`,
+        'Failed to clear message queue',
+        { error: error?.toString() }
+      ));
+    }
+  }
+
+  /**
+   * Get queue statistics
+   */
+  getQueueStats(): {
+    totalQueued: number;
+    queuesBySession: Record<string, number>;
+    oldestQueuedMessage?: Date;
+    newestQueuedMessage?: Date;
+  } {
+    let totalQueued = 0;
+    const queuesBySession: Record<string, number> = {};
+    let oldestQueuedMessage: Date | undefined;
+    let newestQueuedMessage: Date | undefined;
+
+    for (const [sessionId, queue] of this.offlineQueues) {
+      queuesBySession[sessionId] = queue.messages.length;
+      totalQueued += queue.messages.length;
+
+      for (const message of queue.messages) {
+        if (message.queuedAt) {
+          if (!oldestQueuedMessage || message.queuedAt < oldestQueuedMessage) {
+            oldestQueuedMessage = message.queuedAt;
+          }
+          if (!newestQueuedMessage || message.queuedAt > newestQueuedMessage) {
+            newestQueuedMessage = message.queuedAt;
+          }
+        }
+      }
+    }
+
+    return {
+      totalQueued,
+      queuesBySession,
+      oldestQueuedMessage,
+      newestQueuedMessage
+    };
+  }
+
+  /**
+   * Get current network state
+   */
+  getNetworkState(): NetworkState {
+    return { ...this.networkState };
+  }
+
+  /**
+   * Manually set network state (for testing)
+   */
+  setNetworkState(online: boolean, connectionQuality?: NetworkState['connectionQuality']): void {
+    const wasOnline = this.networkState.online;
+    this.networkState = {
+      online,
+      connectionQuality,
+      lastStateChange: new Date()
+    };
+
+    // Trigger queue processing if we just came online
+    if (!wasOnline && online) {
+      this.processAllQueues();
+    }
+  }
+
+  /**
+   * Register a queue processor callback
+   */
+  registerQueueProcessor(processor: (sessionId: string, messages: QueuedMessage[]) => Promise<void>): void {
+    this.queueProcessors.push(processor);
+  }
+
+  /**
+   * Process all queues manually
+   */
+  async processAllQueues(): Promise<void> {
+    if (!this.networkState.online || this.queueProcessors.length === 0) {
+      return;
+    }
+
+    for (const [sessionId, queue] of this.offlineQueues) {
+      if (queue.processingEnabled && queue.messages.length > 0) {
+        await this.processQueue(sessionId);
+      }
     }
   }
 
@@ -309,6 +576,7 @@ export class MessageStorage {
     try {
       this.messageCache.delete(sessionId);
       await this.adapter.removeItem(`messages_${sessionId}`);
+      await this.clearQueue(sessionId);
       return createResult.success(undefined);
     } catch (error) {
       return createResult.error(SolConnectError.system(
@@ -326,13 +594,14 @@ export class MessageStorage {
   async clearAll(): Promise<Result<void>> {
     try {
       const keys = await this.adapter.getAllKeys();
-      const messageKeys = keys.filter(key => key.startsWith('messages_'));
+      const messageKeys = keys.filter(key => key.startsWith('messages_') || key.startsWith('queue_'));
       
       for (const key of messageKeys) {
         await this.adapter.removeItem(key);
       }
       
       this.messageCache.clear();
+      this.offlineQueues.clear();
       return createResult.success(undefined);
     } catch (error) {
       return createResult.error(SolConnectError.system(
@@ -352,7 +621,10 @@ export class MessageStorage {
       const pendingMessages: StoredMessage[] = [];
       
       for (const [sessionId, messages] of this.messageCache) {
-        const pending = messages.filter(m => m.deliveryStatus === 'pending');
+        const pending = messages.filter(m => 
+          m.deliveryStatus === 'pending' || 
+          m.deliveryStatus === 'queued'
+        );
         pendingMessages.push(...pending);
       }
 
@@ -373,15 +645,22 @@ export class MessageStorage {
   async exportMessages(): Promise<Result<string>> {
     try {
       const allMessages: Record<string, StoredMessage[]> = {};
+      const allQueues: Record<string, OfflineQueue> = {};
       
       for (const [sessionId, messages] of this.messageCache) {
         allMessages[sessionId] = messages;
       }
 
+      for (const [sessionId, queue] of this.offlineQueues) {
+        allQueues[sessionId] = queue;
+      }
+
       const exportData = {
-        version: '1.0',
+        version: '2.0',
         timestamp: new Date().toISOString(),
-        messages: allMessages
+        messages: allMessages,
+        queues: allQueues,
+        networkState: this.networkState
       };
 
       return createResult.success(JSON.stringify(exportData, null, 2));
@@ -412,11 +691,21 @@ export class MessageStorage {
 
       let importedCount = 0;
       
+      // Import messages
       for (const [sessionId, messages] of Object.entries(importData.messages)) {
         const typedMessages = messages as StoredMessage[];
         this.messageCache.set(sessionId, typedMessages);
         await this.persistSession(sessionId, typedMessages);
         importedCount += typedMessages.length;
+      }
+
+      // Import queues if available (v2.0+)
+      if (importData.queues) {
+        for (const [sessionId, queue] of Object.entries(importData.queues)) {
+          const typedQueue = queue as OfflineQueue;
+          this.offlineQueues.set(sessionId, typedQueue);
+          await this.persistQueue(sessionId, typedQueue);
+        }
       }
 
       return createResult.success(importedCount);
@@ -471,6 +760,170 @@ export class MessageStorage {
       clearInterval(this.syncInterval);
       this.syncInterval = undefined;
     }
+
+    if (this.queueProcessingInterval) {
+      clearInterval(this.queueProcessingInterval);
+      this.queueProcessingInterval = undefined;
+    }
+
+    // Remove network event listeners
+    if (typeof window !== 'undefined') {
+      if (this.onlineListener) {
+        window.removeEventListener('online', this.onlineListener);
+      }
+      if (this.offlineListener) {
+        window.removeEventListener('offline', this.offlineListener);
+      }
+    }
+  }
+
+  // Private helper methods
+
+  private shouldQueue(message: Message): boolean {
+    // Queue messages that are important or large
+    return message.ciphertext.length > 1000 || 
+           (message as any).priority === 'high';
+  }
+
+  private async addToQueue(sessionId: string, message: StoredMessage): Promise<void> {
+    let queue = this.offlineQueues.get(sessionId);
+    
+    if (!queue) {
+      queue = {
+        sessionId,
+        messages: [],
+        processingEnabled: true
+      };
+      this.offlineQueues.set(sessionId, queue);
+    }
+
+    const queuedMessage: QueuedMessage = {
+      ...message,
+      priority: this.calculatePriority(message),
+      maxRetries: this.maxRetries,
+      nextRetryAt: this.calculateNextRetry(message.retryCount)
+    };
+
+    queue.messages.push(queuedMessage);
+    
+    // Limit queue size
+    if (queue.messages.length > this.maxQueueSize) {
+      queue.messages.splice(0, queue.messages.length - this.maxQueueSize);
+    }
+
+    await this.persistQueue(sessionId, queue);
+  }
+
+  private async updateQueuedMessage(
+    sessionId: string, 
+    messageId: string, 
+    status: StoredMessage['deliveryStatus'],
+    error?: string
+  ): Promise<void> {
+    const queue = this.offlineQueues.get(sessionId);
+    if (!queue) return;
+
+    const messageIndex = queue.messages.findIndex(m => m.id === messageId);
+    if (messageIndex === -1) return;
+
+    const message = queue.messages[messageIndex];
+    
+    if (status === 'sent' || status === 'delivered') {
+      // Remove from queue on success
+      queue.messages.splice(messageIndex, 1);
+    } else if (status === 'failed') {
+      // Update retry info
+      message.deliveryStatus = status;
+      message.errorMessage = error;
+      message.retryCount++;
+      message.lastRetryAt = new Date();
+      message.nextRetryAt = this.calculateNextRetry(message.retryCount);
+      
+      // Remove if max retries exceeded
+      if (message.retryCount >= message.maxRetries) {
+        queue.messages.splice(messageIndex, 1);
+      }
+    }
+
+    await this.persistQueue(sessionId, queue);
+  }
+
+  private calculatePriority(message: StoredMessage): number {
+    // Higher priority for newer messages and important content types
+    let priority = 50; // Base priority
+    
+    const messageAge = Date.now() - (message.queuedAt?.getTime() || Date.now());
+    const ageHours = messageAge / (1000 * 60 * 60);
+    
+    // Decrease priority as message gets older
+    priority -= Math.min(ageHours * 2, 30);
+    
+    // Increase priority for certain content types
+    if (message.content_type === 'urgent') {
+      priority += 20;
+    } else if (message.content_type === 'image' || message.content_type === 'file') {
+      priority += 10;
+    }
+    
+    return Math.max(priority, 1);
+  }
+
+  private calculateNextRetry(retryCount: number): Date {
+    // Exponential backoff: 1s, 2s, 4s, 8s, etc.
+    const delayMs = Math.min(1000 * Math.pow(2, retryCount), 30000); // Max 30 seconds
+    return new Date(Date.now() + delayMs);
+  }
+
+  private async processQueue(sessionId: string): Promise<void> {
+    const queue = this.offlineQueues.get(sessionId);
+    if (!queue || !queue.processingEnabled || queue.messages.length === 0) {
+      return;
+    }
+
+    // Get messages ready for retry
+    const now = new Date();
+    const readyMessages = queue.messages.filter(m => 
+      !m.nextRetryAt || m.nextRetryAt <= now
+    );
+
+    if (readyMessages.length === 0) {
+      return;
+    }
+
+    // Process with registered processors
+    for (const processor of this.queueProcessors) {
+      try {
+        await processor(sessionId, readyMessages);
+      } catch (error) {
+        console.error('Queue processor failed:', error);
+      }
+    }
+
+    queue.lastProcessedAt = now;
+  }
+
+  private setupNetworkStateListeners(): void {
+    if (typeof window !== 'undefined') {
+      this.onlineListener = () => {
+        this.setNetworkState(true);
+      };
+      
+      this.offlineListener = () => {
+        this.setNetworkState(false);
+      };
+
+      window.addEventListener('online', this.onlineListener);
+      window.addEventListener('offline', this.offlineListener);
+    }
+  }
+
+  private startQueueProcessing(): void {
+    // Process queues every 5 seconds when online
+    this.queueProcessingInterval = setInterval(() => {
+      if (this.networkState.online) {
+        this.processAllQueues();
+      }
+    }, 5000);
   }
 
   /**
@@ -479,6 +932,14 @@ export class MessageStorage {
   private async persistSession(sessionId: string, messages: StoredMessage[]): Promise<void> {
     const data = JSON.stringify(messages);
     await this.adapter.setItem(`messages_${sessionId}`, data);
+  }
+
+  /**
+   * Persist queue to storage
+   */
+  private async persistQueue(sessionId: string, queue: OfflineQueue): Promise<void> {
+    const data = JSON.stringify(queue);
+    await this.adapter.setItem(`queue_${sessionId}`, data);
   }
 
   /**
@@ -504,6 +965,28 @@ export class MessageStorage {
   }
 
   /**
+   * Load offline queues from storage
+   */
+  private async loadOfflineQueues(): Promise<void> {
+    const keys = await this.adapter.getAllKeys();
+    const queueKeys = keys.filter(key => key.startsWith('queue_'));
+    
+    for (const key of queueKeys) {
+      const sessionId = key.substring('queue_'.length);
+      const data = await this.adapter.getItem(key);
+      
+      if (data) {
+        try {
+          const queue = JSON.parse(data) as OfflineQueue;
+          this.offlineQueues.set(sessionId, queue);
+        } catch (error) {
+          console.error(`Failed to parse queue for session ${sessionId}:`, error);
+        }
+      }
+    }
+  }
+
+  /**
    * Start periodic sync to ensure cache and storage are in sync
    */
   private startPeriodicSync(): void {
@@ -522,6 +1005,14 @@ export class MessageStorage {
         await this.persistSession(sessionId, messages);
       } catch (error) {
         console.error(`Failed to sync session ${sessionId}:`, error);
+      }
+    }
+
+    for (const [sessionId, queue] of this.offlineQueues) {
+      try {
+        await this.persistQueue(sessionId, queue);
+      } catch (error) {
+        console.error(`Failed to sync queue ${sessionId}:`, error);
       }
     }
   }
