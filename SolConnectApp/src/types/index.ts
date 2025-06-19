@@ -25,6 +25,7 @@ export type RootStackParamList = {
     session: ChatSession;
     peerName: string;
   };
+  Monitoring: undefined;
 };
 
 export type NavigationProps = NativeStackNavigationProp<RootStackParamList>;
