@@ -16,13 +16,10 @@ const customJestConfig = {
   testEnvironment: 'jsdom',
   
   // Setup files
-  setupFilesAfterEnv: ['<rootDir>/src/test-utils/setupTests.ts'],
-  
-  // Module paths and aliases
-  moduleNameMapping: {
-    '^@/(.*)$': '<rootDir>/src/$1',
-    '^~/(.*)$': '<rootDir>/$1',
-  },
+  setupFilesAfterEnv: [
+    '<rootDir>/src/test-utils/setupTests.ts',
+    '<rootDir>/src/test-utils/customMatchers.ts'
+  ],
   
   // Test patterns
   testMatch: [
@@ -51,7 +48,7 @@ const customJestConfig = {
   
   coverageDirectory: 'coverage',
   
-  coverageThresholds: {
+  coverageThreshold: {
     global: {
       branches: 80,
       functions: 80,
@@ -85,7 +82,7 @@ const customJestConfig = {
   globalTeardown: '<rootDir>/src/test-utils/globalTeardown.ts',
   
   // Mock configuration
-  moduleNameMapping: {
+  moduleNameMapper: {
     // Mock CSS modules
     '\\.(css|less|scss|sass)$': 'identity-obj-proxy',
     
@@ -108,11 +105,7 @@ const customJestConfig = {
     '<rootDir>/dist/',
   ],
   
-  // Watch plugins
-  watchPlugins: [
-    'jest-watch-typeahead/filename',
-    'jest-watch-typeahead/testname',
-  ],
+
   
   // Error handling
   errorOnDeprecated: true,
@@ -121,16 +114,9 @@ const customJestConfig = {
   detectOpenHandles: true,
   detectLeaks: true,
   
-  // Snapshot serializers
-  snapshotSerializers: [
-    'enzyme-to-json/serializer'
-  ],
+
   
-  // Custom matchers
-  setupFilesAfterEnv: [
-    '<rootDir>/src/test-utils/setupTests.ts',
-    '<rootDir>/src/test-utils/customMatchers.ts'
-  ]
+
 };
 
 // Create Jest config with Next.js optimizations
