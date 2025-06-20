@@ -13,6 +13,7 @@ import { SyncManager, getSyncManager } from './sync/SyncManager';
 import { WebSocketSyncTransport } from './sync/WebSocketSyncTransport';
 import { DatabaseService } from './database/DatabaseService';
 import { EncryptionService, initializeEncryptionService, getEncryptionService } from './crypto/EncryptionService';
+import { SyncMessageFactory } from './sync/SyncProtocol';
 
 export interface MessageBusConfig {
   relayEndpoint: string;
@@ -279,6 +280,108 @@ export class MessageBus {
         ErrorCode.UNKNOWN_ERROR,
         `Failed to send message: ${error}`,
         'Message sending failed',
+        { error: error?.toString() }
+      ));
+    }
+  }
+
+  /**
+   * Send a read receipt for a message
+   */
+  async sendReadReceipt(sessionId: string, messageId: string, status: 'delivered' | 'read'): Promise<Result<void>> {
+    try {
+      this.logger.info('Sending read receipt', { sessionId, messageId, status });
+
+      // Create read receipt
+      const receipt = {
+        messageId,
+        status,
+        timestamp: Date.now()
+      };
+
+      // Send via sync protocol if available
+      if (this.syncManager && this.transport instanceof WebSocketTransport) {
+        const syncMessage = SyncMessageFactory.createReadReceipt(
+          sessionId,
+          this.deviceId,
+          [receipt]
+        );
+
+        const sendResult = await this.transport.sendSyncMessage(syncMessage);
+        if (!sendResult.success) {
+          this.logger.error('Failed to send read receipt', sendResult.error);
+          return sendResult;
+        }
+      }
+
+      // Store locally for offline sync
+      if (this.storage) {
+        await this.storage.storeReadReceipt(sessionId, messageId, status);
+      }
+
+      // Update local message status
+      if (this.database) {
+        await this.database.updateMessageStatus(sessionId, messageId, status);
+      }
+
+      return createResult.success(undefined);
+    } catch (error) {
+      this.logger.error('Failed to send read receipt', error);
+      return createResult.error(SolConnectError.system(
+        ErrorCode.UNKNOWN_ERROR,
+        `Failed to send read receipt: ${error}`,
+        'Failed to send read receipt',
+        { error: error?.toString() }
+      ));
+    }
+  }
+
+  /**
+   * Mark multiple messages as read
+   */
+  async markMessagesAsRead(sessionId: string, messageIds: string[]): Promise<Result<void>> {
+    try {
+      this.logger.info('Marking messages as read', { sessionId, count: messageIds.length });
+
+      const receipts = messageIds.map(messageId => ({
+        messageId,
+        status: 'read' as const,
+        timestamp: Date.now()
+      }));
+
+      // Send batch read receipts
+      if (this.syncManager && this.transport instanceof WebSocketTransport) {
+        const syncMessage = SyncMessageFactory.createReadReceipt(
+          sessionId,
+          this.deviceId,
+          receipts
+        );
+
+        const sendResult = await this.transport.sendSyncMessage(syncMessage);
+        if (!sendResult.success) {
+          this.logger.warn('Failed to send batch read receipts', sendResult.error);
+        }
+      }
+
+      // Update local storage and database
+      if (this.storage || this.database) {
+        await Promise.all(messageIds.map(async messageId => {
+          if (this.storage) {
+            await this.storage.storeReadReceipt(sessionId, messageId, 'read');
+          }
+          if (this.database) {
+            await this.database.updateMessageStatus(sessionId, messageId, 'read');
+          }
+        }));
+      }
+
+      return createResult.success(undefined);
+    } catch (error) {
+      this.logger.error('Failed to mark messages as read', error);
+      return createResult.error(SolConnectError.system(
+        ErrorCode.UNKNOWN_ERROR,
+        `Failed to mark messages as read: ${error}`,
+        'Failed to mark messages as read',
         { error: error?.toString() }
       ));
     }
@@ -716,27 +819,55 @@ export class MessageBus {
     if (!this.networkManager) return;
 
     // Listen for network state changes
-    this.networkStateListener = this.networkManager.addEventListener((networkState) => {
-      this.logger.info('Network state changed', networkState);
+    this.networkStateListener = this.networkManager.addEventListener((state) => {
+      this.logger.info('Network state changed', state);
 
-      if (networkState.online && !this.transport.isConnected) {
-        // Network came online, try to reconnect transport
-        this.connectTransport().then(result => {
-          if (result.success) {
-            this.logger.info('Transport reconnected after network restoration');
-            // Process queued messages
-            this.processQueuedMessages();
-          } else {
-            this.logger.warn('Failed to reconnect transport after network restoration', result.error);
-          }
-        });
+      if (state.online && this.transport.isConnected) {
+        // Network is back online and transport is connected
+        this.processPendingMessages()
+          .then(() => this.logger.info('Processed pending messages after coming online'))
+          .catch((error) => this.logger.error('Failed to process pending messages', error));
       }
     });
 
-    // Register queue processor with network manager
-    this.queueProcessorUnsubscribe = this.networkManager.registerQueueProcessor(
-      this.handleQueuedMessages.bind(this)
-    );
+    // Subscribe to read receipt sync messages
+    if (this.transport) {
+      this.transport.onSyncMessage((message) => {
+        if (message.type === 'read_receipt_sync') {
+          const readReceiptSync = message as any; // Type will be ReadReceiptSyncMessage
+          this.handleIncomingReadReceipts(readReceiptSync).catch(error => 
+            this.logger.error('Failed to handle incoming read receipts', error)
+          );
+        }
+      });
+    }
+  }
+
+  private async handleIncomingReadReceipts(message: any): Promise<void> {
+    try {
+      const receipts = message.receipts || [];
+      
+      for (const receipt of receipts) {
+        // Update local message status
+        if (this.database) {
+          await this.database.updateMessageStatus(
+            message.sessionId,
+            receipt.messageId,
+            receipt.status,
+            receipt.timestamp
+          );
+        }
+        
+        // Notify UI of status update
+        this.logger.info('Received read receipt', {
+          messageId: receipt.messageId,
+          status: receipt.status,
+          from: receipt.readerWallet
+        });
+      }
+    } catch (error) {
+      this.logger.error('Error processing read receipts', error);
+    }
   }
 
   private async handleQueuedMessages(sessionId: string, messages: any[]): Promise<void> {

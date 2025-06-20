@@ -5,6 +5,34 @@ import SolChatSDK from '../SolChatSDK';
 import { useToast } from '../components/Toast';
 import { getMessageBus } from '../services/MessageBus';
 
+// Status icon component
+const StatusIcon = ({ status }: { status?: string }) => {
+  if (!status) return null;
+  
+  const getIcon = () => {
+    switch (status) {
+      case 'sent':
+        return '✓'; // Single checkmark
+      case 'delivered':
+        return '✓✓'; // Double checkmark
+      case 'read':
+        return <span style={{ color: '#9945FF' }}>✓✓</span>; // Colored double checkmark
+      default:
+        return '◦'; // Pending
+    }
+  };
+  
+  return (
+    <span style={{
+      marginLeft: '4px',
+      fontSize: '12px',
+      opacity: 0.7
+    }}>
+      {getIcon()}
+    </span>
+  );
+};
+
 export default function ChatThreadScreen(): JSX.Element {
   const location = useLocation();
   const navigate = useNavigate();
@@ -75,33 +103,89 @@ export default function ChatThreadScreen(): JSX.Element {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    
+    // Mark visible messages as read
+    const markMessagesAsRead = async () => {
+      if (!session || messages.length === 0) return;
+      
+      const messageBus = getMessageBus();
+      
+      // Find unread messages from the peer
+      const unreadMessages = messages.filter(msg => 
+        msg.sender_wallet !== session.peer_wallet && // Messages from peer
+        (!msg.status || msg.status !== 'read') // Not already read
+      );
+      
+      if (unreadMessages.length > 0) {
+        const messageIds = unreadMessages.map(msg => 
+          // Use timestamp as message ID if no explicit ID
+          msg.timestamp || new Date().toISOString()
+        );
+        
+        // Send read receipts
+        await messageBus.markMessagesAsRead(session.session_id, messageIds);
+        
+        // Update local state
+        setMessages(prev => prev.map(msg => {
+          if (messageIds.includes(msg.timestamp || '')) {
+            return { ...msg, status: 'read' };
+          }
+          return msg;
+        }));
+      }
+    };
+    
+    markMessagesAsRead();
+  }, [messages, session]);
 
   const sendMessage = useCallback(async () => {
     const text = draft.trim();
     if (!text || isSending) return;
 
+    // Declare newMessage outside try block so it's accessible in catch
+    const messageId = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const newMessage: Message = {
+      sender_wallet: session.peer_wallet,
+      ciphertext: text,
+      timestamp: new Date().toISOString(),
+      status: 'pending' as const
+    };
+
     try {
       setIsSending(true);
       setDraft('');
 
-      // Add message to local state immediately
-      const newMessage: Message = {
-        sender_wallet: session.peer_wallet,
-        ciphertext: text,
-        timestamp: new Date().toISOString(),
-      };
+      // Add message to local state immediately with 'pending' status
       setMessages(prev => [...prev, newMessage]);
 
-      // Send encrypted message
-      await SolChatSDK.send_encrypted_message(session, text);
-
-      // Show success feedback
-      showToast({
-        type: 'success',
-        title: 'Message sent',
-        duration: 2000
-      });
+      // Send encrypted message through MessageBus
+      const messageBus = getMessageBus();
+      const result = await messageBus.sendMessage(session, text);
+      
+      if (result.success && result.data) {
+        // Update message status based on delivery receipt
+        setMessages(prev => prev.map(msg => 
+          msg.timestamp === newMessage.timestamp 
+            ? { ...msg, status: result.data!.status } 
+            : msg
+        ));
+        
+        // Show success feedback only if actually sent (not queued)
+        if (result.data.status === 'sent') {
+          showToast({
+            type: 'success',
+            title: 'Message sent',
+            duration: 2000
+          });
+        } else if (result.data.status === 'queued') {
+          showToast({
+            type: 'info',
+            title: 'Message queued',
+            message: 'Your message will be sent when connection is restored.',
+            duration: 3000
+          });
+        }
+      }
 
       // Poll for replies
       const replies = await SolChatSDK.poll_messages(session);
@@ -109,11 +193,18 @@ export default function ChatThreadScreen(): JSX.Element {
         setMessages(prev => [...prev, ...replies]);
         
         // Store replies
-        const messageBus = getMessageBus();
         await messageBus.storeMessages(session.session_id, replies);
       }
     } catch (err) {
       console.error('[ChatThread] Error sending message:', err);
+      
+      // Update message status to failed
+      setMessages(prev => prev.map(msg => 
+        msg.timestamp === newMessage.timestamp 
+          ? { ...msg, status: 'failed' as const } 
+          : msg
+      ));
+      
       showToast({
         type: 'error',
         title: 'Failed to send message',
@@ -279,12 +370,18 @@ export default function ChatThreadScreen(): JSX.Element {
                 <div style={{
                   fontSize: '11px',
                   opacity: 0.7,
-                  marginTop: '4px'
+                  marginTop: '4px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: message.sender_wallet === session.peer_wallet ? 'flex-end' : 'flex-start'
                 }}>
                   {new Date(message.timestamp).toLocaleTimeString([], { 
                     hour: '2-digit', 
                     minute: '2-digit' 
                   })}
+                  {message.sender_wallet === session.peer_wallet && (
+                    <StatusIcon status={message.status} />
+                  )}
                 </div>
               </div>
             </div>

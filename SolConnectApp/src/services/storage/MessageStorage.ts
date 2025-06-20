@@ -20,6 +20,8 @@ interface StoredMessage extends Message {
   retryCount: number;
   lastRetryAt?: Date;
   errorMessage?: string;
+  // Read receipt fields
+  readAt?: Date;
 }
 
 interface QueuedMessage extends StoredMessage {
@@ -359,6 +361,50 @@ export class MessageStorage {
         ErrorCode.STORAGE_ERROR,
         `Failed to update message status: ${error}`,
         'Failed to update message status',
+        { error: error?.toString() }
+      ));
+    }
+  }
+
+  /**
+   * Store a read receipt for a message
+   */
+  async storeReadReceipt(sessionId: string, messageId: string, status: 'delivered' | 'read'): Promise<Result<void>> {
+    try {
+      const messages = this.messageCache.get(sessionId) || [];
+      const messageIndex = messages.findIndex(m => m.id === messageId);
+      
+      if (messageIndex === -1) {
+        // Message not found locally, but that's okay - it might be from another device
+        return createResult.success(undefined);
+      }
+
+      const message = messages[messageIndex];
+      
+      // Update the message status
+      message.deliveryStatus = status;
+      if (status === 'delivered') {
+        message.deliveredAt = new Date();
+      } else if (status === 'read') {
+        message.readAt = new Date();
+        // Also ensure delivered is set
+        if (!message.deliveredAt) {
+          message.deliveredAt = new Date();
+        }
+      }
+
+      messages[messageIndex] = message;
+      this.messageCache.set(sessionId, messages);
+
+      // Persist changes
+      await this.persistSession(sessionId, messages);
+
+      return createResult.success(undefined);
+    } catch (error) {
+      return createResult.error(SolConnectError.system(
+        ErrorCode.STORAGE_ERROR,
+        `Failed to store read receipt: ${error}`,
+        'Failed to save read receipt',
         { error: error?.toString() }
       ));
     }

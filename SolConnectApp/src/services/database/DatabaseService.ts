@@ -563,6 +563,57 @@ export class DatabaseService {
     }
   }
 
+  /**
+   * Update message status with timestamp
+   */
+  async updateMessageStatus(
+    sessionId: string, 
+    messageId: string, 
+    status: 'delivered' | 'read',
+    timestamp?: number
+  ): Promise<Result<void>> {
+    try {
+      const sessionResult = await this.pool.query(
+        'SELECT id FROM chat_sessions WHERE session_id = $1',
+        [sessionId]
+      );
+      
+      if (sessionResult.rows.length === 0) {
+        return { 
+          success: false, 
+          error: new Error('Session not found')
+        };
+      }
+      
+      const sessionUuid = sessionResult.rows[0].id;
+      const timestampDate = timestamp ? new Date(timestamp) : new Date();
+      
+      if (status === 'delivered') {
+        const query = `
+          UPDATE messages 
+          SET delivered_at = $1
+          WHERE session_id = $2 AND message_id = $3 AND delivered_at IS NULL
+        `;
+        await this.pool.query(query, [timestampDate, sessionUuid, messageId]);
+      } else if (status === 'read') {
+        const query = `
+          UPDATE messages 
+          SET read_at = $1, delivered_at = COALESCE(delivered_at, $1)
+          WHERE session_id = $2 AND message_id = $3 AND read_at IS NULL
+        `;
+        await this.pool.query(query, [timestampDate, sessionUuid, messageId]);
+      }
+      
+      return { success: true, data: undefined };
+    } catch (error) {
+      this.logger.error('Failed to update message status', error);
+      return { 
+        success: false, 
+        error: new Error(`Failed to update message status: ${error.message}`)
+      };
+    }
+  }
+
   // Analytics operations
   async recordMessageMetrics(): Promise<Result<void>> {
     try {

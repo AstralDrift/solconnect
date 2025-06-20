@@ -21,12 +21,14 @@ export enum SyncMessageType {
   SYNC_UPDATE = 'sync_update',          // Send queued messages
   SYNC_ACK = 'sync_ack',                // Acknowledge received messages
   DEVICE_ANNOUNCE = 'device_announce',   // Announce device presence
+  READ_RECEIPT = 'read_receipt',         // Send read receipt
   
   // Server -> Client
   SYNC_RESPONSE = 'sync_response',       // Send missing messages
   SYNC_CONFLICT = 'sync_conflict',       // Notify of conflicts
   SYNC_STATUS = 'sync_status',           // Sync operation status
   DEVICE_LIST = 'device_list',           // List of active devices
+  READ_RECEIPT_SYNC = 'read_receipt_sync', // Sync read receipts
   
   // Bidirectional
   SYNC_HEARTBEAT = 'sync_heartbeat'     // Keep sync connection alive
@@ -169,6 +171,32 @@ export interface SyncHeartbeatMessage extends SyncMessage {
 }
 
 /**
+ * Read receipt message sent by client
+ */
+export interface ReadReceiptMessage extends SyncMessage {
+  type: SyncMessageType.READ_RECEIPT;
+  receipts: Array<{
+    messageId: string;
+    status: 'delivered' | 'read';
+    timestamp: number;
+  }>;
+}
+
+/**
+ * Read receipt sync message from server
+ */
+export interface ReadReceiptSyncMessage extends SyncMessage {
+  type: SyncMessageType.READ_RECEIPT_SYNC;
+  receipts: Array<{
+    messageId: string;
+    readerWallet: string;
+    status: 'delivered' | 'read';
+    timestamp: number;
+    deviceId: string;
+  }>;
+}
+
+/**
  * Union type for all sync messages
  */
 export type AnySyncMessage = 
@@ -180,7 +208,9 @@ export type AnySyncMessage =
   | SyncStatusMessage
   | DeviceAnnounceMessage
   | DeviceListMessage
-  | SyncHeartbeatMessage;
+  | SyncHeartbeatMessage
+  | ReadReceiptMessage
+  | ReadReceiptSyncMessage;
 
 /**
  * Sync protocol configuration
@@ -261,7 +291,13 @@ export const SyncMessageGuards = {
     msg.type === SyncMessageType.DEVICE_LIST,
   
   isSyncHeartbeat: (msg: AnySyncMessage): msg is SyncHeartbeatMessage =>
-    msg.type === SyncMessageType.SYNC_HEARTBEAT
+    msg.type === SyncMessageType.SYNC_HEARTBEAT,
+  
+  isReadReceipt: (msg: AnySyncMessage): msg is ReadReceiptMessage =>
+    msg.type === SyncMessageType.READ_RECEIPT,
+  
+  isReadReceiptSync: (msg: AnySyncMessage): msg is ReadReceiptSyncMessage =>
+    msg.type === SyncMessageType.READ_RECEIPT_SYNC
 };
 
 /**
@@ -359,6 +395,46 @@ export class SyncMessageFactory {
       messageId: `hb-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       sequenceNumber,
       vectorClock
+    };
+  }
+
+  static createReadReceipt(
+    sessionId: string,
+    deviceId: string,
+    receipts: Array<{
+      messageId: string;
+      status: 'delivered' | 'read';
+      timestamp: number;
+    }>
+  ): ReadReceiptMessage {
+    return {
+      type: SyncMessageType.READ_RECEIPT,
+      sessionId,
+      deviceId,
+      timestamp: Date.now(),
+      messageId: `read-rcpt-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      receipts
+    };
+  }
+
+  static createReadReceiptSync(
+    sessionId: string,
+    deviceId: string,
+    receipts: Array<{
+      messageId: string;
+      readerWallet: string;
+      status: 'delivered' | 'read';
+      timestamp: number;
+      deviceId: string;
+    }>
+  ): ReadReceiptSyncMessage {
+    return {
+      type: SyncMessageType.READ_RECEIPT_SYNC,
+      sessionId,
+      deviceId,
+      timestamp: Date.now(),
+      messageId: `read-sync-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      receipts
     };
   }
 } 

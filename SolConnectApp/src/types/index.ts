@@ -18,6 +18,17 @@ export interface Message {
   timestamp?: string;
   session_id?: string;
   content_type?: string;
+  status?: 'sent' | 'delivered' | 'read';
+  readAt?: string;
+  deliveredAt?: string;
+}
+
+export interface ReadReceipt {
+  messageId: string;
+  sessionId: string;
+  readerWallet: string;
+  status: 'delivered' | 'read';
+  timestamp: string;
 }
 
 export type RootStackParamList = {
