@@ -60,6 +60,29 @@ export default function ChatListScreen(): JSX.Element {
         </p>
         <div style={{ display: 'flex', gap: '8px' }}>
           <button
+            onClick={() => navigate('/search')}
+            style={{
+              background: 'none',
+              border: '1px solid #ddd',
+              borderRadius: '8px',
+              padding: '8px 16px',
+              fontSize: '14px',
+              color: '#666',
+              cursor: 'pointer',
+              transition: 'all 0.2s',
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.borderColor = '#3B82F6';
+              e.currentTarget.style.color = '#3B82F6';
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.borderColor = '#ddd';
+              e.currentTarget.style.color = '#666';
+            }}
+          >
+            Search
+          </button>
+          <button
             onClick={() => navigate('/monitoring')}
             style={{
               background: 'none',

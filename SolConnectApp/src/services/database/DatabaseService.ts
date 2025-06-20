@@ -425,6 +425,25 @@ export class DatabaseService {
     }
   }
 
+  async getMessageById(messageId: string): Promise<Result<MessageRecord | null>> {
+    try {
+      const query = 'SELECT * FROM messages WHERE message_id = $1';
+      const result = await this.pool.query(query, [messageId]);
+      
+      if (result.rows.length === 0) {
+        return { success: true, data: null };
+      }
+      
+      return { success: true, data: this.mapMessageRecord(result.rows[0]) };
+    } catch (error) {
+      this.logger.error('Failed to get message by ID', error);
+      return { 
+        success: false, 
+        error: new Error(`Failed to get message by ID: ${error.message}`)
+      };
+    }
+  }
+
   async getMessagesSinceSequence(sessionId: string, sinceSequence: number): Promise<Result<MessageRecord[]>> {
     try {
       const query = `
@@ -721,12 +740,365 @@ export class DatabaseService {
       deviceId: row.device_id,
       lastSyncedSequence: row.last_synced_sequence,
       lastKnownSequence: row.last_known_sequence,
-      syncVector: row.sync_vector,
-      pendingMessageIds: row.pending_message_ids,
-      lastSyncAt: row.last_sync_at,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at
+      syncVector: row.sync_vector || {},
+      pendingMessageIds: row.pending_message_ids || [],
+      lastSyncAt: new Date(row.last_sync_at),
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at)
     };
+  }
+
+  // ===================================================================
+  // SEARCH FUNCTIONALITY
+  // ===================================================================
+
+  /**
+   * Index a message for search (temporarily store decrypted content)
+   */
+  async indexMessageForSearch(messageId: string, decryptedContent: string, ttlHours: number = 24): Promise<Result<void>> {
+    try {
+      const query = `
+        INSERT INTO message_search_content (message_id, decrypted_content, expires_at)
+        SELECT id, $2, NOW() + INTERVAL '${ttlHours} hours'
+        FROM messages WHERE message_id = $1
+        ON CONFLICT (message_id) 
+        DO UPDATE SET 
+          decrypted_content = $2,
+          expires_at = NOW() + INTERVAL '${ttlHours} hours'
+      `;
+      
+      await this.pool.query(query, [messageId, decryptedContent]);
+      
+      this.logger.debug('Message indexed for search', { messageId });
+      return { success: true, data: undefined };
+    } catch (error) {
+      this.logger.error('Failed to index message for search', error);
+      return { 
+        success: false, 
+        error: new Error(`Failed to index message for search: ${error.message}`)
+      };
+    }
+  }
+
+  /**
+   * Remove a message from search index
+   */
+  async removeFromSearchIndex(messageId: string): Promise<Result<void>> {
+    try {
+      const query = `
+        DELETE FROM message_search_content 
+        WHERE message_id = (SELECT id FROM messages WHERE message_id = $1)
+      `;
+      
+      await this.pool.query(query, [messageId]);
+      
+      return { success: true, data: undefined };
+    } catch (error) {
+      this.logger.error('Failed to remove message from search index', error);
+      return { 
+        success: false, 
+        error: new Error(`Failed to remove message from search index: ${error.message}`)
+      };
+    }
+  }
+
+  /**
+   * Search messages using PostgreSQL full-text search
+   * Note: Messages must be indexed first using indexMessageForSearch
+   */
+  async searchMessages(params: {
+    userWallet: string;
+    searchQuery: string;
+    sessionIds?: string[];
+    senderAddresses?: string[];
+    dateRange?: { start: Date; end: Date };
+    limit?: number;
+    offset?: number;
+  }): Promise<Result<{
+    results: Array<{
+      messageId: string;
+      sessionId: string;
+      senderAddress: string;
+      timestamp: Date;
+      relevanceScore: number;
+      headline: string;
+    }>;
+    totalCount: number;
+  }>> {
+    const startTime = Date.now();
+    
+    try {
+      // Convert session IDs to UUIDs
+      let sessionUuids: string[] | null = null;
+      if (params.sessionIds && params.sessionIds.length > 0) {
+        const sessionQuery = `
+          SELECT id FROM chat_sessions 
+          WHERE session_id = ANY($1::text[])
+        `;
+        const sessionResult = await this.pool.query(sessionQuery, [params.sessionIds]);
+        sessionUuids = sessionResult.rows.map(row => row.id);
+      }
+
+      // Execute search function
+      const searchQuery = `
+        SELECT 
+          m.message_id,
+          cs.session_id,
+          sr.sender_address,
+          sr.timestamp,
+          sr.relevance_score,
+          sr.headline
+        FROM search_messages($1, $2, $3, $4, $5, $6, $7, $8) sr
+        JOIN messages m ON sr.message_id = m.id
+        JOIN chat_sessions cs ON sr.session_id = cs.id
+      `;
+      
+      const values = [
+        params.userWallet,
+        params.searchQuery,
+        sessionUuids,
+        params.senderAddresses || null,
+        params.dateRange?.start || null,
+        params.dateRange?.end || null,
+        params.limit || 50,
+        params.offset || 0
+      ];
+      
+      const result = await this.pool.query(searchQuery, values);
+      
+      // Get total count
+      const countQuery = `
+        WITH user_sessions AS (
+          SELECT DISTINCT cs.id
+          FROM chat_sessions cs
+          JOIN session_participants sp ON cs.id = sp.session_id
+          WHERE sp.wallet_address = $1 AND sp.is_active = true
+        )
+        SELECT COUNT(DISTINCT m.id) as total
+        FROM messages m
+        JOIN message_search_content msc ON m.id = msc.message_id
+        JOIN user_sessions us ON m.session_id = us.id
+        WHERE msc.content_tokens @@ websearch_to_tsquery('solconnect_search', $2)
+      `;
+      
+      const countResult = await this.pool.query(countQuery, [params.userWallet, params.searchQuery]);
+      const totalCount = parseInt(countResult.rows[0].total);
+      
+      // Record search history
+      await this.recordSearchHistory({
+        userWallet: params.userWallet,
+        searchQuery: params.searchQuery,
+        filters: {
+          sessionIds: params.sessionIds,
+          senderAddresses: params.senderAddresses,
+          dateRange: params.dateRange
+        },
+        resultCount: result.rows.length,
+        searchDuration: Date.now() - startTime
+      });
+      
+      return {
+        success: true,
+        data: {
+          results: result.rows.map(row => ({
+            messageId: row.message_id,
+            sessionId: row.session_id,
+            senderAddress: row.sender_address,
+            timestamp: new Date(row.timestamp),
+            relevanceScore: row.relevance_score,
+            headline: row.headline
+          })),
+          totalCount
+        }
+      };
+    } catch (error) {
+      this.logger.error('Failed to search messages', error);
+      return { 
+        success: false, 
+        error: new Error(`Failed to search messages: ${error.message}`)
+      };
+    }
+  }
+
+  /**
+   * Record search history for analytics and suggestions
+   */
+  async recordSearchHistory(params: {
+    userWallet: string;
+    searchQuery: string;
+    filters: any;
+    resultCount: number;
+    searchDuration: number;
+  }): Promise<Result<void>> {
+    try {
+      const query = `
+        INSERT INTO search_history (
+          user_wallet, search_query, filters, result_count, search_duration_ms
+        ) VALUES ($1, $2, $3, $4, $5)
+      `;
+      
+      await this.pool.query(query, [
+        params.userWallet,
+        params.searchQuery,
+        JSON.stringify(params.filters),
+        params.resultCount,
+        params.searchDuration
+      ]);
+      
+      // Update search analytics
+      await this.updateSearchAnalytics();
+      
+      return { success: true, data: undefined };
+    } catch (error) {
+      this.logger.error('Failed to record search history', error);
+      // Don't fail the search if history recording fails
+      return { success: true, data: undefined };
+    }
+  }
+
+  /**
+   * Get search history for a user
+   */
+  async getSearchHistory(userWallet: string, limit: number = 20): Promise<Result<Array<{
+    searchQuery: string;
+    filters: any;
+    resultCount: number;
+    executedAt: Date;
+  }>>> {
+    try {
+      const query = `
+        SELECT search_query, filters, result_count, executed_at
+        FROM search_history
+        WHERE user_wallet = $1
+        ORDER BY executed_at DESC
+        LIMIT $2
+      `;
+      
+      const result = await this.pool.query(query, [userWallet, limit]);
+      
+      return {
+        success: true,
+        data: result.rows.map(row => ({
+          searchQuery: row.search_query,
+          filters: row.filters,
+          resultCount: row.result_count,
+          executedAt: new Date(row.executed_at)
+        }))
+      };
+    } catch (error) {
+      this.logger.error('Failed to get search history', error);
+      return { 
+        success: false, 
+        error: new Error(`Failed to get search history: ${error.message}`)
+      };
+    }
+  }
+
+  /**
+   * Clear search history for a user
+   */
+  async clearSearchHistory(userWallet: string): Promise<Result<void>> {
+    try {
+      const query = 'DELETE FROM search_history WHERE user_wallet = $1';
+      await this.pool.query(query, [userWallet]);
+      
+      return { success: true, data: undefined };
+    } catch (error) {
+      this.logger.error('Failed to clear search history', error);
+      return { 
+        success: false, 
+        error: new Error(`Failed to clear search history: ${error.message}`)
+      };
+    }
+  }
+
+  /**
+   * Clean up expired search content
+   */
+  async cleanupExpiredSearchContent(): Promise<Result<number>> {
+    try {
+      const query = 'SELECT cleanup_expired_search_content() as deleted_count';
+      const result = await this.pool.query(query);
+      
+      const deletedCount = result.rows[0].deleted_count;
+      this.logger.info('Cleaned up expired search content', { deletedCount });
+      
+      return { success: true, data: deletedCount };
+    } catch (error) {
+      this.logger.error('Failed to cleanup expired search content', error);
+      return { 
+        success: false, 
+        error: new Error(`Failed to cleanup expired search content: ${error.message}`)
+      };
+    }
+  }
+
+  /**
+   * Update search analytics (aggregated data)
+   */
+  private async updateSearchAnalytics(): Promise<void> {
+    try {
+      const query = `
+        INSERT INTO search_analytics (date, hour, total_searches, unique_users, avg_result_count)
+        SELECT 
+          CURRENT_DATE,
+          EXTRACT(HOUR FROM NOW()),
+          COUNT(*),
+          COUNT(DISTINCT user_wallet),
+          AVG(result_count)
+        FROM search_history
+        WHERE executed_at >= NOW() - INTERVAL '1 hour'
+        ON CONFLICT (date, hour) 
+        DO UPDATE SET 
+          total_searches = search_analytics.total_searches + 1,
+          unique_users = (
+            SELECT COUNT(DISTINCT user_wallet) 
+            FROM search_history 
+            WHERE executed_at >= CURRENT_DATE + INTERVAL '1 hour' * EXTRACT(HOUR FROM NOW())
+              AND executed_at < CURRENT_DATE + INTERVAL '1 hour' * (EXTRACT(HOUR FROM NOW()) + 1)
+          ),
+          avg_result_count = (
+            SELECT AVG(result_count) 
+            FROM search_history 
+            WHERE executed_at >= CURRENT_DATE + INTERVAL '1 hour' * EXTRACT(HOUR FROM NOW())
+              AND executed_at < CURRENT_DATE + INTERVAL '1 hour' * (EXTRACT(HOUR FROM NOW()) + 1)
+          )
+      `;
+      
+      await this.pool.query(query);
+    } catch (error) {
+      this.logger.error('Failed to update search analytics', error);
+    }
+  }
+
+  /**
+   * Get search suggestions based on partial query
+   */
+  async getSearchSuggestions(userWallet: string, partialQuery: string, limit: number = 5): Promise<Result<string[]>> {
+    try {
+      const query = `
+        SELECT DISTINCT search_query
+        FROM search_history
+        WHERE user_wallet = $1 
+          AND search_query ILIKE $2 || '%'
+          AND result_count > 0
+        ORDER BY executed_at DESC
+        LIMIT $3
+      `;
+      
+      const result = await this.pool.query(query, [userWallet, partialQuery, limit]);
+      
+      return {
+        success: true,
+        data: result.rows.map(row => row.search_query)
+      };
+    } catch (error) {
+      this.logger.error('Failed to get search suggestions', error);
+      return { 
+        success: false, 
+        error: new Error(`Failed to get search suggestions: ${error.message}`)
+      };
+    }
   }
 }
 
