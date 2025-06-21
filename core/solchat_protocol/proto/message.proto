@@ -48,4 +48,31 @@ enum AckStatus {
   FAILED = 2;
   EXPIRED = 3;
   REJECTED = 4;
+}
+
+// Handshake message for client authentication
+message HandshakeRequest {
+  // Client's wallet address (32 bytes, base58 encoded)
+  string wallet_address = 1;
+  
+  // Unix timestamp
+  uint64 timestamp = 2;
+  
+  // Ed25519 signature of wallet_address + timestamp
+  bytes signature = 3;
+  
+  // Protocol version
+  string version = 4;
+}
+
+// Response to handshake request
+message HandshakeResponse {
+  // Whether the handshake was successful
+  bool success = 1;
+  
+  // Error message if not successful
+  optional string error = 2;
+  
+  // Server timestamp
+  uint64 timestamp = 3;
 } 

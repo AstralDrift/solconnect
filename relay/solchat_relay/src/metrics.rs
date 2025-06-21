@@ -10,9 +10,13 @@ pub struct Metrics {
     pub registry: Registry,
     pub messages_processed: IntCounter,
     pub messages_failed: IntCounter,
+    pub messages_routed: IntCounter,
+    pub messages_queued: IntCounter,
     pub bytes_received: IntCounter,
     pub bytes_sent: IntCounter,
     pub active_connections: IntGauge,
+    pub registered_clients: IntGauge,
+    pub queued_messages: IntGauge,
     pub message_latency: Histogram,
     pub message_size: HistogramVec,
     pub connection_duration: Histogram,
@@ -32,6 +36,16 @@ impl Metrics {
             "Total number of failed message processing attempts"
         ).unwrap();
         
+        let messages_routed = IntCounter::new(
+            "solchat_messages_routed_total",
+            "Total number of messages successfully routed"
+        ).unwrap();
+        
+        let messages_queued = IntCounter::new(
+            "solchat_messages_queued_total",
+            "Total number of messages queued for offline recipients"
+        ).unwrap();
+        
         let bytes_received = IntCounter::new(
             "solchat_bytes_received_total",
             "Total bytes received by the relay"
@@ -45,6 +59,16 @@ impl Metrics {
         let active_connections = IntGauge::new(
             "solchat_active_connections",
             "Number of active QUIC connections"
+        ).unwrap();
+        
+        let registered_clients = IntGauge::new(
+            "solchat_registered_clients",
+            "Number of registered clients with wallet addresses"
+        ).unwrap();
+        
+        let queued_messages = IntGauge::new(
+            "solchat_queued_messages",
+            "Current number of queued messages"
         ).unwrap();
         
         let message_latency = Histogram::with_opts(
@@ -72,9 +96,13 @@ impl Metrics {
         // Register all metrics
         registry.register(Box::new(messages_processed.clone())).unwrap();
         registry.register(Box::new(messages_failed.clone())).unwrap();
+        registry.register(Box::new(messages_routed.clone())).unwrap();
+        registry.register(Box::new(messages_queued.clone())).unwrap();
         registry.register(Box::new(bytes_received.clone())).unwrap();
         registry.register(Box::new(bytes_sent.clone())).unwrap();
         registry.register(Box::new(active_connections.clone())).unwrap();
+        registry.register(Box::new(registered_clients.clone())).unwrap();
+        registry.register(Box::new(queued_messages.clone())).unwrap();
         registry.register(Box::new(message_latency.clone())).unwrap();
         registry.register(Box::new(message_size.clone())).unwrap();
         registry.register(Box::new(connection_duration.clone())).unwrap();
@@ -83,9 +111,13 @@ impl Metrics {
             registry,
             messages_processed,
             messages_failed,
+            messages_routed,
+            messages_queued,
             bytes_received,
             bytes_sent,
             active_connections,
+            registered_clients,
+            queued_messages,
             message_latency,
             message_size,
             connection_duration,
@@ -109,6 +141,14 @@ impl Metrics {
         self.messages_failed.inc();
     }
     
+    pub fn record_message_routed(&self) {
+        self.messages_routed.inc();
+    }
+    
+    pub fn record_message_queued(&self) {
+        self.messages_queued.inc();
+    }
+    
     pub fn record_bytes_received(&self, bytes: usize) {
         self.bytes_received.inc_by(bytes as u64);
     }
@@ -123,6 +163,14 @@ impl Metrics {
     
     pub fn decrement_connections(&self) {
         self.active_connections.dec();
+    }
+    
+    pub fn set_registered_clients(&self, count: i64) {
+        self.registered_clients.set(count);
+    }
+    
+    pub fn set_queued_messages(&self, count: i64) {
+        self.queued_messages.set(count);
     }
     
     pub fn record_latency(&self, duration: f64) {

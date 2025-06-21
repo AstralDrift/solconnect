@@ -3,15 +3,19 @@ use clap::Parser;
 use hyper::{Body, Request, Response, Server};
 use hyper::service::{make_service_fn, service_fn};
 use quinn::{Endpoint, ServerConfig};
-use solchat_protocol::{ChatMessage, AckMessage, AckStatus};
+use solchat_protocol::{ChatMessage, AckMessage};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{info, warn, error, debug, span, Level};
+use tokio::sync::mpsc;
 
-mod metrics;
+pub mod metrics;
+pub mod router;
+
 use metrics::Metrics;
+use router::{MessageRouter, RoutableMessage};
 
 // This is where the magic (and the bugs) happen
 
@@ -32,6 +36,7 @@ struct Args {
 #[derive(Clone)]
 struct AppState {
     metrics: Arc<Metrics>,
+    router: Arc<MessageRouter>,
 }
 
 #[tokio::main]
@@ -40,8 +45,14 @@ async fn main() -> Result<()> {
     
     let args = Args::parse();
     let metrics = Arc::new(Metrics::new());
+    let router = Arc::new(MessageRouter::new(metrics.clone()));
+    
+    // Start the metrics updater task
+    router.clone().start_metrics_updater();
+    
     let state = AppState {
         metrics: metrics.clone(),
+        router,
     };
     
     info!(
@@ -147,13 +158,58 @@ async fn handle_connection(conn: quinn::Connecting, state: AppState) {
             
             info!("🔗 New connection established");
             
-            while let Ok((mut send, mut recv)) = connection.accept_bi().await {
-                let state = state.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handle_stream(&mut send, &mut recv, state).await {
-                        error!("Stream error: {}", e);
+            // Create a channel for sending messages to this client
+            let (tx, mut rx) = mpsc::channel::<RoutableMessage>(100);
+            
+            // Handle incoming streams and outgoing messages concurrently
+            let incoming_state = state.clone();
+            let outgoing_state = state.clone();
+            let connection_clone = connection.clone();
+            
+            let incoming_task = tokio::spawn(async move {
+                while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+                    let state = incoming_state.clone();
+                    let tx = tx.clone();
+                    let addr = remote_addr;
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_stream(&mut send, &mut recv, state, tx, addr).await {
+                            error!("Stream error: {}", e);
+                        }
+                    });
+                }
+            });
+            
+            // Task to handle outgoing messages
+            let outgoing_task = tokio::spawn(async move {
+                while let Some(routable_msg) = rx.recv().await {
+                    match connection_clone.open_bi().await {
+                        Ok((mut send, _recv)) => {
+                            let msg_bytes = prost::Message::encode_to_vec(&routable_msg.message);
+                            if let Err(e) = send.write_all(&msg_bytes).await {
+                                error!("Failed to forward message: {}", e);
+                            } else {
+                                if let Err(e) = send.finish().await {
+                                    error!("Failed to finish stream: {}", e);
+                                }
+                                outgoing_state.metrics.record_bytes_sent(msg_bytes.len());
+                                debug!("📨 Forwarded message to recipient");
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to open stream for message forwarding: {}", e);
+                        }
                     }
-                });
+                }
+            });
+            
+            // Wait for either task to complete
+            tokio::select! {
+                _ = incoming_task => {
+                    debug!("Incoming task completed");
+                }
+                _ = outgoing_task => {
+                    debug!("Outgoing task completed");
+                }
             }
             
             let duration = connection_start.elapsed().as_secs_f64();
@@ -172,6 +228,8 @@ async fn handle_stream(
     send: &mut quinn::SendStream,
     recv: &mut quinn::RecvStream,
     state: AppState,
+    client_tx: mpsc::Sender<RoutableMessage>,
+    remote_addr: SocketAddr,
 ) -> Result<()> {
     let mut buf = [0u8; 65536]; // 64KB buffer
     
@@ -190,7 +248,7 @@ async fn handle_stream(
         // Try to parse as ChatMessage first
         match prost::Message::decode(data) {
             Ok(chat_msg) => {
-                if let Err(e) = handle_chat_message(chat_msg, send, &state).await {
+                if let Err(e) = handle_chat_message(chat_msg, send, &state, remote_addr, client_tx.clone()).await {
                     error!("Failed to handle chat message: {}", e);
                     state.metrics.record_message_failed();
                 } else {
@@ -229,6 +287,8 @@ async fn handle_chat_message(
     chat_msg: ChatMessage,
     send: &mut quinn::SendStream,
     state: &AppState,
+    remote_addr: SocketAddr,
+    client_tx: mpsc::Sender<RoutableMessage>,
 ) -> Result<()> {
     let msg_span = span!(Level::INFO, "chat_message", 
         id = %chat_msg.id,
@@ -256,10 +316,19 @@ async fn handle_chat_message(
     }
     
     // TODO: Validate signature here
-    // TODO: Route message to recipient here
-    // For now, just acknowledge successful receipt
     
-    let ack = AckMessage::delivered(chat_msg.id);
+    // Register the sender if this is their first message
+    if let Ok(sender_wallet) = chat_msg.sender() {
+        // Note: In a full implementation, we'd properly handle client registration
+        // during connection setup with authentication
+        state.router.register_client(sender_wallet, client_tx).await?;
+    }
+    
+    // Route the message
+    let status = state.router.route_message(chat_msg.clone(), remote_addr).await?;
+    
+    // Send acknowledgment
+    let ack = AckMessage::new(chat_msg.id, status);
     send_ack_message(ack, send, state).await?;
     
     Ok(())

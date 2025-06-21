@@ -7,7 +7,7 @@ pub mod proto {
 use crate::WalletAddress;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub use proto::{ChatMessage, AckMessage, AckStatus};
+pub use proto::{ChatMessage, AckMessage, AckStatus, HandshakeRequest, HandshakeResponse};
 
 /// Conversion helpers for protobuf types
 impl ChatMessage {
@@ -109,6 +109,74 @@ impl AckMessage {
     
     pub fn rejected(ref_message_id: String) -> Self {
         Self::new(ref_message_id, AckStatus::Rejected)
+    }
+}
+
+impl HandshakeRequest {
+    pub fn new(wallet: &WalletAddress, signature: Vec<u8>) -> Self {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        Self {
+            wallet_address: wallet.to_string(),
+            timestamp,
+            signature,
+            version: "1.0.0".to_string(),
+        }
+    }
+    
+    pub fn wallet(&self) -> Result<WalletAddress, String> {
+        let decoded = bs58::decode(&self.wallet_address)
+            .into_vec()
+            .map_err(|e| format!("Invalid wallet address: {}", e))?;
+        
+        if decoded.len() != 32 {
+            return Err("Invalid wallet address length".to_string());
+        }
+        
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(&decoded);
+        Ok(WalletAddress::new(bytes))
+    }
+    
+    pub fn is_expired(&self) -> bool {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        // Handshake requests expire after 30 seconds
+        now > self.timestamp + 30
+    }
+}
+
+impl HandshakeResponse {
+    pub fn success() -> Self {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        Self {
+            success: true,
+            error: None,
+            timestamp,
+        }
+    }
+    
+    pub fn failure(message: String) -> Self {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        Self {
+            success: false,
+            error: Some(message),
+            timestamp,
+        }
     }
 }
 
