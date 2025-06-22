@@ -856,6 +856,326 @@ export class SolConnectSDK {
   }
 
   /**
+   * Update message status with enhanced error handling
+   */
+  async updateMessageStatus(messageId: string, status: MessageStatus, optimistic: boolean = false): Promise<Result<void>> {
+    const context = {
+      operation: 'updateMessageStatus',
+      messageId,
+      status,
+      optimistic,
+      timestamp: Date.now(),
+      sdkInitialized: this.isInitialized,
+      messageBusReady: !!this.messageBus
+    };
+
+    // Check SDK initialization
+    if (!this.isInitialized || !this.messageBus) {
+      const error = ErrorFactory.sdkNotInitialized('updateMessageStatus', context);
+      return createResult.error(error);
+    }
+
+    // Validate inputs
+    if (!messageId || typeof messageId !== 'string') {
+      const error = SolConnectError.validation(
+        ErrorCode.INVALID_MESSAGE_FORMAT,
+        'Invalid message ID provided',
+        'Please provide a valid message ID.',
+        context
+      );
+      return createResult.error(error);
+    }
+
+    if (!Object.values(MessageStatus).includes(status)) {
+      const error = SolConnectError.validation(
+        ErrorCode.INVALID_MESSAGE_FORMAT,
+        `Invalid message status: ${status}`,
+        'Please provide a valid message status.',
+        context
+      );
+      return createResult.error(error);
+    }
+
+    try {
+      // Execute with retry for resilience
+      const result = await this.retryUtility.execute(
+        async () => {
+          return await Metrics.time('update_message_status', async () => {
+            // Update in storage first
+            if (this.messageBus) {
+              const storageResult = await this.messageBus.updateMessageStatus(messageId, status);
+              if (!storageResult.success) {
+                throw ErrorFactory.messageDeliveryFailed(
+                  messageId,
+                  storageResult.error || new Error('Status update failed'),
+                  { ...context, storageError: storageResult.error }
+                );
+              }
+            }
+
+            // Broadcast status update if not optimistic
+            if (!optimistic && this.messageBus) {
+              const update: MessageStatusUpdate = {
+                messageId,
+                status,
+                timestamp: new Date().toISOString()
+              };
+              
+              await this.messageBus.broadcastStatusUpdate(update);
+            }
+
+            return createResult.success(undefined);
+          });
+        },
+        {
+          onRetry: (error, attemptNumber) => {
+            this.log(`Retrying status update (attempt ${attemptNumber + 1}):`, error.message);
+            Metrics.action('status_update_retry', undefined, {
+              messageId,
+              status,
+              attemptNumber,
+              error: error.message
+            });
+          }
+        }
+      );
+
+      if (result.success) {
+        this.log(`Message status updated: ${messageId} -> ${status}`);
+        Metrics.business('message_status_updated', 1, { messageId, status, optimistic });
+      }
+
+      return result;
+    } catch (error) {
+      const statusError = error instanceof SolConnectError 
+        ? error 
+        : ErrorFactory.messageDeliveryFailed(
+            messageId,
+            error as Error,
+            { ...context, step: 'status_update_failed' }
+          );
+
+      Metrics.action('status_update_failed', undefined, { 
+        messageId, 
+        status,
+        error: statusError.message 
+      });
+      getErrorTracker().captureError(statusError, { context: 'Message status update failed' });
+      return createResult.error(statusError);
+    }
+  }
+
+  /**
+   * Mark message as read with enhanced error handling
+   */
+  async markMessageAsRead(messageId: string): Promise<Result<void>> {
+    const context = {
+      operation: 'markMessageAsRead',
+      messageId,
+      timestamp: Date.now(),
+      sdkInitialized: this.isInitialized,
+      messageBusReady: !!this.messageBus
+    };
+
+    // Check SDK initialization
+    if (!this.isInitialized || !this.messageBus) {
+      const error = ErrorFactory.sdkNotInitialized('markMessageAsRead', context);
+      return createResult.error(error);
+    }
+
+    // Validate message ID
+    if (!messageId || typeof messageId !== 'string') {
+      const error = SolConnectError.validation(
+        ErrorCode.INVALID_MESSAGE_FORMAT,
+        'Invalid message ID provided',
+        'Please provide a valid message ID.',
+        context
+      );
+      return createResult.error(error);
+    }
+
+    try {
+      // Update status to read
+      const result = await this.updateMessageStatus(messageId, MessageStatus.READ, false);
+      
+      if (result.success) {
+        this.log(`Message marked as read: ${messageId}`);
+        Metrics.business('message_marked_read', 1, { messageId });
+      }
+
+      return result;
+    } catch (error) {
+      const readError = SolConnectError.system(
+        ErrorCode.UNKNOWN_ERROR,
+        `Failed to mark message as read: ${(error as Error).message}`,
+        'Unable to mark message as read. Please try again.',
+        { ...context, error: (error as Error).message }
+      );
+      
+      Metrics.action('mark_read_failed', undefined, { messageId, error: readError.message });
+      getErrorTracker().captureError(readError, { context: 'Mark message as read failed' });
+      return createResult.error(readError);
+    }
+  }
+
+  /**
+   * Batch update message statuses for performance
+   */
+  async batchUpdateMessageStatus(updates: MessageStatusUpdate[]): Promise<Result<void>> {
+    const context = {
+      operation: 'batchUpdateMessageStatus',
+      updateCount: updates.length,
+      timestamp: Date.now(),
+      sdkInitialized: this.isInitialized,
+      messageBusReady: !!this.messageBus
+    };
+
+    // Check SDK initialization
+    if (!this.isInitialized || !this.messageBus) {
+      const error = ErrorFactory.sdkNotInitialized('batchUpdateMessageStatus', context);
+      return createResult.error(error);
+    }
+
+    // Validate updates array
+    if (!Array.isArray(updates) || updates.length === 0) {
+      const error = SolConnectError.validation(
+        ErrorCode.INVALID_MESSAGE_FORMAT,
+        'Invalid updates array provided',
+        'Please provide a non-empty array of status updates.',
+        context
+      );
+      return createResult.error(error);
+    }
+
+    // Validate each update
+    for (const update of updates) {
+      if (!update.messageId || !update.status || !update.timestamp) {
+        const error = SolConnectError.validation(
+          ErrorCode.INVALID_MESSAGE_FORMAT,
+          'Invalid status update format',
+          'All status updates must have messageId, status, and timestamp.',
+          { ...context, invalidUpdate: update }
+        );
+        return createResult.error(error);
+      }
+    }
+
+    try {
+      // Execute batch update with monitoring
+      const result = await Metrics.time('batch_update_message_status', async () => {
+        if (this.messageBus) {
+          const storageResult = await this.messageBus.batchUpdateMessageStatus(updates);
+          if (!storageResult.success) {
+            throw ErrorFactory.messageDeliveryFailed(
+              'batch_update',
+              storageResult.error || new Error('Batch status update failed'),
+              { ...context, storageError: storageResult.error }
+            );
+          }
+
+          // Broadcast all status updates
+          for (const update of updates) {
+            await this.messageBus.broadcastStatusUpdate(update);
+          }
+        }
+
+        return createResult.success(undefined);
+      });
+
+      if (result.success) {
+        this.log(`Batch status update completed: ${updates.length} messages`);
+        Metrics.business('batch_status_updated', updates.length, { updateCount: updates.length });
+      }
+
+      return result;
+    } catch (error) {
+      const batchError = error instanceof SolConnectError 
+        ? error 
+        : SolConnectError.system(
+            ErrorCode.UNKNOWN_ERROR,
+            `Batch status update failed: ${(error as Error).message}`,
+            'Unable to update message statuses. Please try again.',
+            { ...context, error: (error as Error).message }
+          );
+
+      Metrics.action('batch_status_update_failed', undefined, { 
+        updateCount: updates.length,
+        error: batchError.message 
+      });
+      getErrorTracker().captureError(batchError, { context: 'Batch status update failed' });
+      return createResult.error(batchError);
+    }
+  }
+
+  /**
+   * Get message status with enhanced error handling
+   */
+  async getMessageStatus(messageId: string): Promise<Result<MessageStatus | null>> {
+    const context = {
+      operation: 'getMessageStatus',
+      messageId,
+      timestamp: Date.now(),
+      sdkInitialized: this.isInitialized,
+      messageBusReady: !!this.messageBus
+    };
+
+    // Check SDK initialization
+    if (!this.isInitialized || !this.messageBus) {
+      const error = ErrorFactory.sdkNotInitialized('getMessageStatus', context);
+      return createResult.error(error);
+    }
+
+    // Validate message ID
+    if (!messageId || typeof messageId !== 'string') {
+      const error = SolConnectError.validation(
+        ErrorCode.INVALID_MESSAGE_FORMAT,
+        'Invalid message ID provided',
+        'Please provide a valid message ID.',
+        context
+      );
+      return createResult.error(error);
+    }
+
+    try {
+      // Execute with retry for resilience
+      const result = await this.retryUtility.execute(
+        async () => {
+          return await Metrics.time('get_message_status', async () => {
+            return await this.messageBus!.getMessageStatus(messageId);
+          });
+        },
+        {
+          onRetry: (error, attemptNumber) => {
+            this.log(`Retrying get status (attempt ${attemptNumber + 1}):`, error.message);
+            Metrics.action('get_status_retry', undefined, {
+              messageId,
+              attemptNumber,
+              error: error.message
+            });
+          }
+        }
+      );
+
+      if (result.success) {
+        Metrics.business('message_status_retrieved', 1, { messageId, status: result.data });
+      }
+
+      return result;
+    } catch (error) {
+      const statusError = SolConnectError.system(
+        ErrorCode.STORAGE_ERROR,
+        `Failed to get message status: ${(error as Error).message}`,
+        'Unable to retrieve message status. Please try again.',
+        { ...context, error: (error as Error).message }
+      );
+      
+      Metrics.action('get_status_failed', undefined, { messageId, error: statusError.message });
+      getErrorTracker().captureError(statusError, { context: 'Get message status failed' });
+      return createResult.error(statusError);
+    }
+  }
+
+  /**
    * Cleanup and disconnect with enhanced error handling
    */
   async cleanup(): Promise<Result<void>> {
