@@ -3,11 +3,13 @@
  * Provides consistent interface between React frontend and Rust backend
  */
 
-import { ChatSession, Message } from '../types';
+import { ChatSession, Message, MessageStatus, MessageStatusUpdate } from '../types';
 import { SolConnectError, ErrorCode, Result, createResult, ErrorFactory } from '../types/errors';
 import { MessageBus, getMessageBus, initializeMessageBus } from './MessageBus';
 import { DeliveryReceipt, MessageHandler, Subscription } from './transport/MessageTransport';
 import { Metrics, getErrorTracker, initializeMonitoring } from './monitoring';
+import { RetryUtility } from './utils/RetryUtility';
+import { CircuitBreaker } from './utils/CircuitBreaker';
 
 export interface WalletInfo {
   address: string;
@@ -37,6 +39,8 @@ export class SolConnectSDK {
   private activeSessions = new Map<string, ChatSession>();
   private config: Required<SDKConfig>;
   private isInitialized = false;
+  private retryUtility: RetryUtility;
+  private circuitBreaker: CircuitBreaker;
 
   constructor(config: SDKConfig) {
     this.config = {
@@ -45,33 +49,71 @@ export class SolConnectSDK {
       enableLogging: true,
       ...config
     };
+    
+    // Initialize retry utility and circuit breaker for message operations
+    this.retryUtility = RetryUtility.forNetworkOperations();
+    this.circuitBreaker = CircuitBreaker.forNetworkOperations();
   }
 
   /**
-   * Initialize the SDK
+   * Initialize the SDK with enhanced error handling
    */
   async initialize(): Promise<Result<void>> {
     if (this.isInitialized) {
       return createResult.success(undefined);
     }
 
+    const initContext = {
+      operation: 'initialize',
+      configProvided: true,
+      relayEndpoint: this.config.relayEndpoint,
+      networkType: this.config.networkType,
+      timestamp: Date.now()
+    };
+
     try {
       // Initialize monitoring services first
-      await initializeMonitoring();
-      Metrics.action('sdk_initialization_started');
+      try {
+        await initializeMonitoring();
+        Metrics.action('sdk_initialization_started');
+      } catch (monitoringError) {
+        const error = ErrorFactory.sdkInitializationFailed(
+          monitoringError as Error,
+          { ...initContext, step: 'monitoring_initialization' }
+        );
+        getErrorTracker().captureError(error, { context: 'SDK monitoring initialization' });
+        return createResult.error(error);
+      }
 
       // Initialize message bus with persistence enabled
-      const busResult = await initializeMessageBus({
-        relayEndpoint: this.config.relayEndpoint,
-        transportType: 'websocket', // Use WebSocket for now
-        enableEncryption: true,
-        enablePersistence: true
-      });
+      let busResult;
+      try {
+        busResult = await initializeMessageBus({
+          relayEndpoint: this.config.relayEndpoint,
+          transportType: 'websocket', // Use WebSocket for now
+          enableEncryption: true,
+          enablePersistence: true
+        });
+      } catch (busError) {
+        const error = ErrorFactory.sdkInitializationFailed(
+          busError as Error,
+          { ...initContext, step: 'message_bus_initialization' }
+        );
+        Metrics.action('sdk_initialization_failed', undefined, { error: error.message });
+        getErrorTracker().captureError(error, { context: 'SDK message bus initialization' });
+        return createResult.error(error);
+      }
 
       if (!busResult.success) {
-        Metrics.action('sdk_initialization_failed', undefined, { error: busResult.error?.message });
-        getErrorTracker().captureError(busResult.error!.toError(), { context: 'SDK initialization' });
-        return createResult.error(busResult.error!);
+        const originalError = busResult.error || new Error('MessageBus initialization failed');
+        const error = ErrorFactory.sdkInitializationFailed(
+          originalError,
+          { ...initContext, step: 'message_bus_initialization', busResult }
+        );
+        
+        Metrics.action('sdk_initialization_failed', undefined, { error: error.message });
+        getErrorTracker().captureError(error, { context: 'SDK message bus initialization' });
+        return createResult.error(error);
       }
 
       this.messageBus = busResult.data!;
@@ -81,48 +123,102 @@ export class SolConnectSDK {
       Metrics.action('sdk_initialization_completed');
       return createResult.success(undefined);
     } catch (error) {
-      return createResult.error(SolConnectError.system(
-        ErrorCode.UNKNOWN_ERROR,
-        `SDK initialization failed: ${error}`,
-        'Failed to initialize SolConnect',
-        { error: error?.toString() }
-      ));
+      // Catch any unexpected errors with proper context
+      const sdkError = ErrorFactory.sdkInitializationFailed(
+        error as Error,
+        { ...initContext, step: 'unexpected_error' }
+      );
+      
+      Metrics.action('sdk_initialization_failed', undefined, { error: sdkError.message });
+      getErrorTracker().captureError(sdkError, { context: 'SDK initialization - unexpected error' });
+      return createResult.error(sdkError);
     }
   }
 
   /**
-   * Connect wallet and authenticate user
+   * Connect wallet and authenticate user with timeout handling
    */
-  async connectWallet(): Promise<Result<WalletInfo>> {
+  async connectWallet(timeoutMs: number = 5000): Promise<Result<WalletInfo>> {
     return await Metrics.time('wallet_connection', async () => {
+      const walletContext = {
+        operation: 'connectWallet',
+        timeoutMs,
+        timestamp: Date.now(),
+        networkType: this.config.networkType
+      };
+
       try {
         Metrics.action('wallet_connection_started');
         
-        // For now, simulate wallet connection
-        // In production, this would integrate with Solana wallet adapter
-        await new Promise(resolve => setTimeout(resolve, 200));
-        
-        const walletAddress = this.generateTestWalletAddress();
-        
-        this.currentWallet = {
-          address: walletAddress,
-          connected: true,
-          balance: 1.5 // SOL
-        };
+        // Implement timeout for wallet connection
+        const connectionResult = await Promise.race([
+          this.performWalletConnection(walletContext),
+          this.createTimeoutPromise(timeoutMs, 'connectWallet')
+        ]);
 
+        if (connectionResult.isTimeout) {
+          const timeoutError = ErrorFactory.networkTimeout('connectWallet', timeoutMs, {
+            ...walletContext,
+            startTime: walletContext.timestamp
+          });
+          
+          Metrics.action('wallet_connection_failed', undefined, { error: timeoutError.message });
+          getErrorTracker().captureError(timeoutError, { context: 'Wallet connection timeout' });
+          return createResult.error(timeoutError);
+        }
+
+        this.currentWallet = connectionResult;
         this.log('Wallet connected:', this.currentWallet.address);
-        Metrics.business('wallet_connected', 1, { walletAddress });
+        Metrics.business('wallet_connected', 1, { walletAddress: this.currentWallet.address });
+        
         return createResult.success(this.currentWallet);
       } catch (error) {
-        Metrics.action('wallet_connection_failed', undefined, { error: error?.toString() });
-        getErrorTracker().captureError(error as Error, { context: 'Wallet connection' });
-        return createResult.error(SolConnectError.auth(
-          ErrorCode.WALLET_NOT_CONNECTED,
-          `Wallet connection failed: ${error}`,
-          'Failed to connect wallet. Please try again.',
-          { error: error?.toString() }
-        ));
+        const walletError = ErrorFactory.walletConnectionFailed(
+          (error as Error).message || 'Unknown wallet connection error',
+          error as Error,
+          { ...walletContext, duration: Date.now() - walletContext.timestamp }
+        );
+        
+        Metrics.action('wallet_connection_failed', undefined, { error: walletError.message });
+        getErrorTracker().captureError(walletError, { context: 'Wallet connection' });
+        return createResult.error(walletError);
       }
+    });
+  }
+
+  /**
+   * Perform the actual wallet connection operation
+   */
+  private async performWalletConnection(context: Record<string, any>): Promise<WalletInfo> {
+    try {
+      // For now, simulate wallet connection
+      // In production, this would integrate with Solana wallet adapter
+      await new Promise(resolve => setTimeout(resolve, 200));
+      
+      const walletAddress = this.generateTestWalletAddress();
+      
+      return {
+        address: walletAddress,
+        connected: true,
+        balance: 1.5 // SOL
+      };
+    } catch (error) {
+      throw ErrorFactory.walletConnectionFailed(
+        'Wallet adapter connection failed',
+        error as Error,
+        { ...context, step: 'wallet_adapter_connection' }
+      );
+    }
+  }
+
+  /**
+   * Create a timeout promise that rejects after specified time
+   */
+  private createTimeoutPromise(timeoutMs: number, operation: string): Promise<{ isTimeout: boolean }> {
+    return new Promise((_, reject) => {
+      setTimeout(() => {
+        reject({ isTimeout: true });
+      }, timeoutMs);
     });
   }
 
@@ -151,95 +247,218 @@ export class SolConnectSDK {
   }
 
   /**
-   * Start a new chat session with a peer
+   * Start a new chat session with a peer with enhanced error handling
    */
   async startSession(config: SessionConfig): Promise<Result<ChatSession>> {
+    const sessionContext = {
+      operation: 'startSession',
+      peerWallet: config.peerWallet,
+      currentWallet: this.currentWallet?.address,
+      timestamp: Date.now(),
+      sdkInitialized: this.isInitialized,
+      messageBusReady: !!this.messageBus
+    };
+
+    // Enhanced pre-condition checks
     if (!this.currentWallet?.connected) {
-      return createResult.error(ErrorFactory.walletNotConnected());
+      const error = ErrorFactory.walletNotConnected();
+      error.context = { ...error.context, ...sessionContext };
+      return createResult.error(error);
     }
 
     if (!this.isInitialized || !this.messageBus) {
-      return createResult.error(SolConnectError.system(
-        ErrorCode.UNKNOWN_ERROR,
-        'SDK not initialized',
-        'Please initialize the SDK first'
-      ));
+      const error = ErrorFactory.sdkNotInitialized('startSession', sessionContext);
+      return createResult.error(error);
     }
 
     try {
-      // Validate peer wallet address
+      // Validate peer wallet address with enhanced context
       if (!this.isValidWalletAddress(config.peerWallet)) {
-        return createResult.error(ErrorFactory.invalidWalletAddress(config.peerWallet));
+        const error = ErrorFactory.invalidWalletAddress(config.peerWallet);
+        error.context = { ...error.context, ...sessionContext };
+        return createResult.error(error);
       }
 
-      // Generate session ID
-      const sessionId = this.generateSessionId(this.currentWallet.address, config.peerWallet);
+      // Generate session ID with error handling
+      let sessionId: string;
+      try {
+        sessionId = this.generateSessionId(this.currentWallet.address, config.peerWallet);
+      } catch (error) {
+        const sessionError = ErrorFactory.sessionCreationFailed(
+          error as Error,
+          { ...sessionContext, step: 'session_id_generation' }
+        );
+        getErrorTracker().captureError(sessionError, { context: 'Session ID generation' });
+        return createResult.error(sessionError);
+      }
 
-      // Create shared key (simplified for demo)
-      const sharedKey = this.deriveSharedKey(this.currentWallet.address, config.peerWallet);
+      // Create shared key with error handling
+      let sharedKey: string;
+      try {
+        sharedKey = this.deriveSharedKey(this.currentWallet.address, config.peerWallet);
+      } catch (error) {
+        const keyError = ErrorFactory.sessionCreationFailed(
+          error as Error,
+          { ...sessionContext, step: 'key_derivation', sessionId }
+        );
+        getErrorTracker().captureError(keyError, { context: 'Shared key derivation' });
+        return createResult.error(keyError);
+      }
 
+      // Create session object
       const session: ChatSession = {
         session_id: sessionId,
         peer_wallet: config.peerWallet,
         sharedKey: sharedKey
       };
 
-      this.activeSessions.set(sessionId, session);
-      this.log('Session started:', sessionId);
-      
-      Metrics.business('session_created', 1, { sessionId, peerWallet: config.peerWallet });
-      return createResult.success(session);
+      // Store session with error handling
+      try {
+        this.activeSessions.set(sessionId, session);
+        this.log('Session started:', sessionId);
+        
+        Metrics.business('session_created', 1, { sessionId, peerWallet: config.peerWallet });
+        return createResult.success(session);
+      } catch (error) {
+        const storageError = ErrorFactory.sessionCreationFailed(
+          error as Error,
+          { ...sessionContext, step: 'session_storage', sessionId }
+        );
+        getErrorTracker().captureError(storageError, { context: 'Session storage' });
+        return createResult.error(storageError);
+      }
     } catch (error) {
-      return createResult.error(SolConnectError.system(
-        ErrorCode.UNKNOWN_ERROR,
-        `Failed to start session: ${error}`,
-        'Failed to start chat session',
-        { error: error?.toString() }
-      ));
+      // Catch any unexpected errors with proper context
+      const sessionError = ErrorFactory.sessionCreationFailed(
+        error as Error,
+        { ...sessionContext, step: 'unexpected_error' }
+      );
+      getErrorTracker().captureError(sessionError, { context: 'Session creation - unexpected error' });
+      return createResult.error(sessionError);
     }
   }
 
   /**
-   * Send a message in a session
+   * Send a message in a session with retry logic and circuit breaker
    */
   async sendMessage(sessionId: string, plaintext: string): Promise<Result<DeliveryReceipt>> {
+    const messageContext = {
+      operation: 'sendMessage',
+      sessionId,
+      messageLength: plaintext.length,
+      timestamp: Date.now(),
+      retryCount: 0
+    };
+
+    // Validate session exists
     const session = this.activeSessions.get(sessionId);
     if (!session) {
-      return createResult.error(SolConnectError.validation(
+      const error = SolConnectError.validation(
         ErrorCode.INVALID_MESSAGE_FORMAT,
         'Session not found',
-        'Chat session not found. Please start a new session.'
-      ));
+        'Chat session not found. Please start a new session.',
+        messageContext
+      );
+      return createResult.error(error);
     }
 
+    // Validate message bus availability
     if (!this.messageBus) {
-      return createResult.error(SolConnectError.system(
-        ErrorCode.UNKNOWN_ERROR,
-        'Message bus not available',
-        'Messaging service is not available'
-      ));
+      const error = ErrorFactory.sdkNotInitialized('sendMessage', messageContext);
+      return createResult.error(error);
     }
+
+    // Generate message ID for tracking
+    const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const enhancedContext = { ...messageContext, messageId };
 
     try {
-      const result = await Metrics.time('message_send', async () => {
-        return await this.messageBus!.sendMessage(session, plaintext);
+      // Use circuit breaker and retry utility for resilient message sending
+      const result = await this.circuitBreaker.execute(async () => {
+        return await this.retryUtility.execute(
+          async () => {
+            return await Metrics.time('message_send', async () => {
+              const sendResult = await this.messageBus!.sendMessage(session, plaintext);
+              
+              if (!sendResult.success) {
+                // Convert failed result to an error for retry logic
+                throw ErrorFactory.messageDeliveryFailed(
+                  messageId,
+                  sendResult.error || new Error('Message send failed'),
+                  { ...enhancedContext, busError: sendResult.error }
+                );
+              }
+              
+              return sendResult;
+            });
+          },
+          {
+            onRetry: (error, attemptNumber) => {
+              enhancedContext.retryCount = attemptNumber;
+              this.log(`Retrying message send (attempt ${attemptNumber + 1}):`, error.message);
+              Metrics.action('message_send_retry', undefined, {
+                sessionId,
+                messageId,
+                attemptNumber,
+                error: error.message
+              });
+            },
+            shouldRetry: (error, attemptNumber) => {
+              // Only retry network errors, not validation errors
+              if (error instanceof SolConnectError) {
+                return error.shouldRetry(attemptNumber);
+              }
+              return attemptNumber < 3; // Default retry for unknown errors
+            }
+          }
+        );
       });
-      
+
       if (result.success) {
         this.log('Message sent:', result.data!.messageId);
-        Metrics.business('message_sent', 1, { sessionId, messageId: result.data!.messageId });
-      } else {
-        Metrics.action('message_send_failed', undefined, { sessionId, error: result.error?.message });
+        Metrics.business('message_sent', 1, { 
+          sessionId, 
+          messageId: result.data!.messageId,
+          retryCount: enhancedContext.retryCount 
+        });
       }
-      
+
       return result;
     } catch (error) {
-      return createResult.error(SolConnectError.system(
-        ErrorCode.UNKNOWN_ERROR,
-        `Failed to send message: ${error}`,
-        'Failed to send message. Please try again.',
-        { error: error?.toString() }
-      ));
+      // Handle circuit breaker open state
+      if (error.message?.includes('Circuit breaker is OPEN')) {
+        const circuitError = ErrorFactory.messageDeliveryFailed(
+          messageId,
+          error as Error,
+          { ...enhancedContext, circuitBreakerState: this.circuitBreaker.getState() }
+        );
+        
+        Metrics.action('message_send_failed', undefined, { 
+          sessionId, 
+          messageId,
+          error: 'circuit_breaker_open' 
+        });
+        getErrorTracker().captureError(circuitError, { context: 'Message send - circuit breaker open' });
+        return createResult.error(circuitError);
+      }
+
+      // Handle retry exhaustion and other errors
+      const deliveryError = error instanceof SolConnectError 
+        ? error 
+        : ErrorFactory.messageDeliveryFailed(
+            messageId,
+            error as Error,
+            { ...enhancedContext, step: 'retry_exhausted' }
+          );
+
+      Metrics.action('message_send_failed', undefined, { 
+        sessionId, 
+        messageId,
+        error: deliveryError.message,
+        retryCount: enhancedContext.retryCount
+      });
+      getErrorTracker().captureError(deliveryError, { context: 'Message send failed' });
+      return createResult.error(deliveryError);
     }
   }
 
@@ -277,21 +496,60 @@ export class SolConnectSDK {
   }
 
   /**
-   * End a chat session
+   * End a chat session with enhanced error handling
    */
   async endSession(sessionId: string): Promise<Result<void>> {
+    const context = {
+      operation: 'endSession',
+      sessionId,
+      timestamp: Date.now(),
+      hasSession: this.activeSessions.has(sessionId)
+    };
+
     try {
+      // Check if session exists
+      if (!this.activeSessions.has(sessionId)) {
+        const error = SolConnectError.validation(
+          ErrorCode.INVALID_MESSAGE_FORMAT,
+          `Session ${sessionId} not found`,
+          'Session not found. It may have already ended.',
+          context
+        );
+        return createResult.error(error);
+      }
+
+      // Remove session
       this.activeSessions.delete(sessionId);
+      
+      // Clean up any session-specific resources
+      if (this.messageBus) {
+        try {
+          // Attempt to clean up message bus resources for this session
+          await this.messageBus.clearStoredMessages(sessionId);
+        } catch (cleanupError) {
+          // Log but don't fail the operation
+          this.log('Warning: Failed to clean up session messages:', cleanupError);
+          Metrics.action('session_cleanup_warning', undefined, {
+            sessionId,
+            error: (cleanupError as Error).message
+          });
+        }
+      }
+
       this.log('Session ended:', sessionId);
+      Metrics.business('session_ended', 1, { sessionId });
       
       return createResult.success(undefined);
     } catch (error) {
-      return createResult.error(SolConnectError.system(
+      const endError = SolConnectError.system(
         ErrorCode.UNKNOWN_ERROR,
-        `Failed to end session: ${error}`,
-        'Error occurred while ending session',
-        { error: error?.toString() }
-      ));
+        `Failed to end session: ${(error as Error).message}`,
+        'Error occurred while ending session. Please try again.',
+        { ...context, error: (error as Error).message }
+      );
+      
+      getErrorTracker().captureError(endError, { context: 'Session end failed' });
+      return createResult.error(endError);
     }
   }
 
@@ -326,92 +584,384 @@ export class SolConnectSDK {
   }
 
   /**
-   * Get stored messages for a session
+   * Get stored messages for a session with enhanced error handling
    */
   async getStoredMessages(sessionId: string, limit?: number): Promise<Result<Message[]>> {
-    if (!this.messageBus) {
-      return createResult.error(SolConnectError.system(
-        ErrorCode.UNKNOWN_ERROR,
-        'SDK not initialized',
-        'Please initialize the SDK first'
-      ));
+    const context = {
+      operation: 'getStoredMessages',
+      sessionId,
+      limit,
+      timestamp: Date.now(),
+      sdkInitialized: this.isInitialized,
+      messageBusReady: !!this.messageBus
+    };
+
+    // Check SDK initialization
+    if (!this.isInitialized || !this.messageBus) {
+      const error = ErrorFactory.sdkNotInitialized('getStoredMessages', context);
+      return createResult.error(error);
     }
 
-    return await this.messageBus.getStoredMessages(sessionId, limit);
+    // Validate session ID
+    if (!sessionId || typeof sessionId !== 'string') {
+      const error = SolConnectError.validation(
+        ErrorCode.INVALID_MESSAGE_FORMAT,
+        'Invalid session ID provided',
+        'Please provide a valid session ID.',
+        context
+      );
+      return createResult.error(error);
+    }
+
+    try {
+      // Use retry utility for database operations
+      const result = await this.retryUtility.execute(
+        async () => {
+          return await Metrics.time('get_stored_messages', async () => {
+            return await this.messageBus!.getStoredMessages(sessionId, limit);
+          });
+        },
+        {
+          onRetry: (error, attemptNumber) => {
+            this.log(`Retrying message retrieval (attempt ${attemptNumber + 1}):`, error.message);
+            Metrics.action('get_messages_retry', undefined, {
+              sessionId,
+              attemptNumber,
+              error: error.message
+            });
+          },
+          shouldRetry: (error) => {
+            // Retry on storage errors but not on validation errors
+            if (error instanceof SolConnectError) {
+              return error.category === ErrorCategory.SYSTEM && error.recoverable;
+            }
+            return true;
+          }
+        }
+      );
+
+      if (result.success) {
+        Metrics.business('messages_retrieved', result.data?.length || 0, { sessionId });
+      }
+
+      return result;
+    } catch (error) {
+      const storageError = SolConnectError.system(
+        ErrorCode.STORAGE_ERROR,
+        `Failed to retrieve messages: ${(error as Error).message}`,
+        'Unable to retrieve messages. Please try again.',
+        { ...context, error: (error as Error).message }
+      );
+      
+      Metrics.action('get_messages_failed', undefined, { sessionId, error: storageError.message });
+      getErrorTracker().captureError(storageError, { context: 'Message retrieval failed' });
+      return createResult.error(storageError);
+    }
   }
 
   /**
-   * Clear stored messages for a session
+   * Clear stored messages for a session with enhanced error handling
    */
   async clearStoredMessages(sessionId: string): Promise<Result<void>> {
-    if (!this.messageBus) {
-      return createResult.error(SolConnectError.system(
-        ErrorCode.UNKNOWN_ERROR,
-        'SDK not initialized',
-        'Please initialize the SDK first'
-      ));
+    const context = {
+      operation: 'clearStoredMessages',
+      sessionId,
+      timestamp: Date.now(),
+      sdkInitialized: this.isInitialized,
+      messageBusReady: !!this.messageBus
+    };
+
+    // Check SDK initialization
+    if (!this.isInitialized || !this.messageBus) {
+      const error = ErrorFactory.sdkNotInitialized('clearStoredMessages', context);
+      return createResult.error(error);
     }
 
-    return await this.messageBus.clearStoredMessages(sessionId);
+    // Validate session ID
+    if (!sessionId || typeof sessionId !== 'string') {
+      const error = SolConnectError.validation(
+        ErrorCode.INVALID_MESSAGE_FORMAT,
+        'Invalid session ID provided',
+        'Please provide a valid session ID.',
+        context
+      );
+      return createResult.error(error);
+    }
+
+    try {
+      // Execute with retry for resilience
+      const result = await this.retryUtility.execute(
+        async () => {
+          return await Metrics.time('clear_stored_messages', async () => {
+            return await this.messageBus!.clearStoredMessages(sessionId);
+          });
+        },
+        {
+          onRetry: (error, attemptNumber) => {
+            this.log(`Retrying message clear (attempt ${attemptNumber + 1}):`, error.message);
+            Metrics.action('clear_messages_retry', undefined, {
+              sessionId,
+              attemptNumber,
+              error: error.message
+            });
+          }
+        }
+      );
+
+      if (result.success) {
+        this.log('Messages cleared for session:', sessionId);
+        Metrics.business('messages_cleared', 1, { sessionId });
+      }
+
+      return result;
+    } catch (error) {
+      const clearError = SolConnectError.system(
+        ErrorCode.STORAGE_ERROR,
+        `Failed to clear messages: ${(error as Error).message}`,
+        'Unable to clear messages. Please try again.',
+        { ...context, error: (error as Error).message }
+      );
+      
+      Metrics.action('clear_messages_failed', undefined, { sessionId, error: clearError.message });
+      getErrorTracker().captureError(clearError, { context: 'Message clear failed' });
+      return createResult.error(clearError);
+    }
   }
 
   /**
-   * Export all messages for backup
+   * Export all messages for backup with enhanced error handling
    */
   async exportMessages(): Promise<Result<string>> {
-    if (!this.messageBus) {
-      return createResult.error(SolConnectError.system(
-        ErrorCode.UNKNOWN_ERROR,
-        'SDK not initialized',
-        'Please initialize the SDK first'
-      ));
+    const context = {
+      operation: 'exportMessages',
+      timestamp: Date.now(),
+      sdkInitialized: this.isInitialized,
+      messageBusReady: !!this.messageBus,
+      activeSessions: this.activeSessions.size
+    };
+
+    // Check SDK initialization
+    if (!this.isInitialized || !this.messageBus) {
+      const error = ErrorFactory.sdkNotInitialized('exportMessages', context);
+      return createResult.error(error);
     }
 
-    return await this.messageBus.exportMessages();
+    try {
+      const startTime = Date.now();
+      
+      // Execute export with monitoring
+      const result = await Metrics.time('export_messages', async () => {
+        return await this.messageBus!.exportMessages();
+      });
+
+      if (result.success && result.data) {
+        const exportSize = new Blob([result.data]).size;
+        const duration = Date.now() - startTime;
+        
+        this.log(`Messages exported: ${exportSize} bytes in ${duration}ms`);
+        Metrics.business('messages_exported', 1, { 
+          exportSize, 
+          duration,
+          sessionCount: this.activeSessions.size 
+        });
+      }
+
+      return result;
+    } catch (error) {
+      const exportError = SolConnectError.system(
+        ErrorCode.STORAGE_ERROR,
+        `Failed to export messages: ${(error as Error).message}`,
+        'Unable to export messages. Please check your storage and try again.',
+        { ...context, error: (error as Error).message }
+      );
+      
+      Metrics.action('export_messages_failed', undefined, { error: exportError.message });
+      getErrorTracker().captureError(exportError, { context: 'Message export failed' });
+      return createResult.error(exportError);
+    }
   }
 
   /**
-   * Import messages from backup
+   * Import messages from backup with enhanced error handling
    */
   async importMessages(data: string): Promise<Result<number>> {
-    if (!this.messageBus) {
-      return createResult.error(SolConnectError.system(
-        ErrorCode.UNKNOWN_ERROR,
-        'SDK not initialized',
-        'Please initialize the SDK first'
-      ));
+    const context = {
+      operation: 'importMessages',
+      timestamp: Date.now(),
+      sdkInitialized: this.isInitialized,
+      messageBusReady: !!this.messageBus,
+      dataSize: data?.length || 0
+    };
+
+    // Check SDK initialization
+    if (!this.isInitialized || !this.messageBus) {
+      const error = ErrorFactory.sdkNotInitialized('importMessages', context);
+      return createResult.error(error);
     }
 
-    return await this.messageBus.importMessages(data);
+    // Validate import data
+    if (!data || typeof data !== 'string' || data.trim().length === 0) {
+      const error = SolConnectError.validation(
+        ErrorCode.INVALID_MESSAGE_FORMAT,
+        'Invalid import data provided',
+        'Please provide valid message data to import.',
+        context
+      );
+      return createResult.error(error);
+    }
+
+    // Check data size limit (e.g., 10MB)
+    const maxSize = 10 * 1024 * 1024; // 10MB
+    if (data.length > maxSize) {
+      const error = ErrorFactory.messageTooLarge(data.length, maxSize);
+      error.context = { ...error.context, ...context };
+      return createResult.error(error);
+    }
+
+    try {
+      const startTime = Date.now();
+      
+      // Execute import with monitoring
+      const result = await Metrics.time('import_messages', async () => {
+        return await this.messageBus!.importMessages(data);
+      });
+
+      if (result.success && result.data !== undefined) {
+        const duration = Date.now() - startTime;
+        
+        this.log(`Messages imported: ${result.data} messages in ${duration}ms`);
+        Metrics.business('messages_imported', result.data, { 
+          dataSize: data.length,
+          duration,
+          messageCount: result.data 
+        });
+      }
+
+      return result;
+    } catch (error) {
+      const importError = SolConnectError.system(
+        ErrorCode.STORAGE_ERROR,
+        `Failed to import messages: ${(error as Error).message}`,
+        'Unable to import messages. Please check the data format and try again.',
+        { ...context, error: (error as Error).message }
+      );
+      
+      Metrics.action('import_messages_failed', undefined, { 
+        dataSize: data.length,
+        error: importError.message 
+      });
+      getErrorTracker().captureError(importError, { context: 'Message import failed' });
+      return createResult.error(importError);
+    }
   }
 
   /**
-   * Cleanup and disconnect
+   * Cleanup and disconnect with enhanced error handling
    */
   async cleanup(): Promise<Result<void>> {
+    const context = {
+      operation: 'cleanup',
+      timestamp: Date.now(),
+      currentState: {
+        isInitialized: this.isInitialized,
+        hasWallet: !!this.currentWallet,
+        walletConnected: this.currentWallet?.connected || false,
+        hasMessageBus: !!this.messageBus,
+        activeSessions: this.activeSessions.size
+      }
+    };
+
+    const errors: Error[] = [];
+
     try {
+      // End all active sessions first
+      if (this.activeSessions.size > 0) {
+        this.log(`Ending ${this.activeSessions.size} active sessions...`);
+        const sessionIds = Array.from(this.activeSessions.keys());
+        
+        for (const sessionId of sessionIds) {
+          try {
+            await this.endSession(sessionId);
+          } catch (sessionError) {
+            errors.push(new Error(`Failed to end session ${sessionId}: ${(sessionError as Error).message}`));
+            this.log('Warning: Failed to end session during cleanup:', sessionId, sessionError);
+          }
+        }
+      }
+
       // Disconnect wallet
       if (this.currentWallet?.connected) {
-        await this.disconnectWallet();
+        try {
+          const disconnectResult = await this.disconnectWallet();
+          if (!disconnectResult.success) {
+            errors.push(new Error(`Wallet disconnect failed: ${disconnectResult.error?.message}`));
+          }
+        } catch (walletError) {
+          errors.push(new Error(`Wallet cleanup error: ${(walletError as Error).message}`));
+          this.log('Warning: Failed to disconnect wallet during cleanup:', walletError);
+        }
       }
 
       // Disconnect message bus
       if (this.messageBus) {
-        await this.messageBus.disconnect();
-        this.messageBus = null;
+        try {
+          await this.messageBus.disconnect();
+          this.messageBus = null;
+        } catch (busError) {
+          errors.push(new Error(`Message bus cleanup error: ${(busError as Error).message}`));
+          this.log('Warning: Failed to disconnect message bus during cleanup:', busError);
+        }
       }
 
+      // Reset state
       this.isInitialized = false;
-      this.log('SDK cleanup completed');
+      this.activeSessions.clear();
+      
+      // Report any errors that occurred during cleanup
+      if (errors.length > 0) {
+        const cleanupError = SolConnectError.system(
+          ErrorCode.UNKNOWN_ERROR,
+          `Cleanup completed with ${errors.length} error(s): ${errors.map(e => e.message).join('; ')}`,
+          'Cleanup completed with some errors. The SDK has been reset.',
+          { 
+            ...context, 
+            errors: errors.map(e => e.message),
+            errorCount: errors.length 
+          }
+        );
+        
+        Metrics.action('cleanup_with_errors', undefined, { errorCount: errors.length });
+        getErrorTracker().captureError(cleanupError, { context: 'SDK cleanup with errors' });
+        
+        // Return success even with errors, as the SDK is still reset
+        this.log('SDK cleanup completed with errors');
+        return createResult.success(undefined);
+      }
 
+      this.log('SDK cleanup completed successfully');
+      Metrics.business('sdk_cleanup_completed', 1, { 
+        sessionsCleared: context.currentState.activeSessions 
+      });
+      
       return createResult.success(undefined);
     } catch (error) {
-      return createResult.error(SolConnectError.system(
+      // Catastrophic failure - ensure SDK is marked as not initialized
+      this.isInitialized = false;
+      this.messageBus = null;
+      this.currentWallet = null;
+      this.activeSessions.clear();
+      
+      const fatalError = SolConnectError.system(
         ErrorCode.UNKNOWN_ERROR,
-        `Cleanup failed: ${error}`,
-        'Error occurred during cleanup',
-        { error: error?.toString() }
-      ));
+        `Fatal cleanup error: ${(error as Error).message}`,
+        'A critical error occurred during cleanup. The SDK has been forcefully reset.',
+        { ...context, fatalError: (error as Error).message }
+      );
+      
+      Metrics.action('cleanup_fatal_error', undefined, { error: fatalError.message });
+      getErrorTracker().captureError(fatalError, { context: 'SDK cleanup fatal error' });
+      
+      return createResult.error(fatalError);
     }
   }
 

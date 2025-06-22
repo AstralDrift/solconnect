@@ -151,7 +151,6 @@ afterEach(() => {
   jest.clearAllTimers();
   
   // Clear any pending promises
-  jest.runOnlyPendingTimers();
 });
 
 // Global test utilities

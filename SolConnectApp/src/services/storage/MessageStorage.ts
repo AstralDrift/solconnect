@@ -3,7 +3,7 @@
  * Provides encrypted local storage for messages with cross-platform support and offline queue management
  */
 
-import { Message, ChatSession } from '../../types';
+import { Message, ChatSession, MessageStatus, MessageStatusUpdate, MessageStatusTimestamps } from '../../types';
 import { SolConnectError, ErrorCode, Result, createResult } from '../../types/errors';
 
 interface StoredMessage extends Message {
@@ -1060,6 +1060,249 @@ export class MessageStorage {
       } catch (error) {
         console.error(`Failed to sync queue ${sessionId}:`, error);
       }
+    }
+  }
+
+  /**
+   * Update message status with timestamp tracking
+   */
+  async updateMessageStatus(
+    messageId: string, 
+    status: MessageStatus, 
+    timestamp: string = new Date().toISOString(),
+    error?: string
+  ): Promise<Result<void>> {
+    try {
+      // Find the message across all sessions
+      let targetMessage: StoredMessage | undefined;
+      let targetSessionId: string | undefined;
+
+      for (const [sessionId, messages] of this.sessions) {
+        const message = messages.find(m => m.id === messageId);
+        if (message) {
+          targetMessage = message;
+          targetSessionId = sessionId;
+          break;
+        }
+      }
+
+      if (!targetMessage || !targetSessionId) {
+        return createResult.error(SolConnectError.validation(
+          ErrorCode.INVALID_MESSAGE_FORMAT,
+          `Message ${messageId} not found`,
+          'Message not found'
+        ));
+      }
+
+      // Update status and timestamps
+      targetMessage.status = status;
+      
+      if (!targetMessage.statusTimestamps) {
+        targetMessage.statusTimestamps = {};
+      }
+
+      switch (status) {
+        case MessageStatus.SENT:
+          targetMessage.statusTimestamps.sentAt = timestamp;
+          targetMessage.deliveryStatus = 'sent';
+          break;
+        case MessageStatus.DELIVERED:
+          targetMessage.statusTimestamps.deliveredAt = timestamp;
+          targetMessage.deliveryStatus = 'delivered';
+          break;
+        case MessageStatus.READ:
+          targetMessage.statusTimestamps.readAt = timestamp;
+          // Also set legacy field for backward compatibility
+          targetMessage.readAt = timestamp;
+          break;
+        case MessageStatus.FAILED:
+          targetMessage.statusTimestamps.failedAt = timestamp;
+          targetMessage.deliveryStatus = 'failed';
+          targetMessage.errorMessage = error;
+          break;
+        case MessageStatus.SENDING:
+          // Reset error state when retrying
+          targetMessage.errorMessage = undefined;
+          targetMessage.deliveryStatus = 'pending';
+          break;
+      }
+
+      // Persist the updated session
+      await this.persistSession(targetSessionId, this.sessions.get(targetSessionId)!);
+      
+      return createResult.success(undefined);
+    } catch (error) {
+      return createResult.error(SolConnectError.system(
+        ErrorCode.STORAGE_ERROR,
+        `Failed to update message status: ${error}`,
+        'Failed to update message status'
+      ));
+    }
+  }
+
+  /**
+   * Get current status of a message
+   */
+  async getMessageStatus(messageId: string): Promise<Result<MessageStatus>> {
+    try {
+      for (const messages of this.sessions.values()) {
+        const message = messages.find(m => m.id === messageId);
+        if (message) {
+          return createResult.success(message.status || MessageStatus.SENT);
+        }
+      }
+
+      return createResult.error(SolConnectError.validation(
+        ErrorCode.INVALID_MESSAGE_FORMAT,
+        `Message ${messageId} not found`,
+        'Message not found'
+      ));
+    } catch (error) {
+      return createResult.error(SolConnectError.system(
+        ErrorCode.STORAGE_ERROR,
+        `Failed to get message status: ${error}`,
+        'Failed to get message status'
+      ));
+    }
+  }
+
+  /**
+   * Get all messages with a specific status
+   */
+  async getMessagesWithStatus(status: MessageStatus): Promise<Result<StoredMessage[]>> {
+    try {
+      const matchingMessages: StoredMessage[] = [];
+      
+      for (const messages of this.sessions.values()) {
+        const filtered = messages.filter(m => m.status === status);
+        matchingMessages.push(...filtered);
+      }
+
+      // Sort by timestamp descending (newest first)
+      matchingMessages.sort((a, b) => {
+        const aTime = new Date(a.timestamp || 0).getTime();
+        const bTime = new Date(b.timestamp || 0).getTime();
+        return bTime - aTime;
+      });
+
+      return createResult.success(matchingMessages);
+    } catch (error) {
+      return createResult.error(SolConnectError.system(
+        ErrorCode.STORAGE_ERROR,
+        `Failed to get messages with status: ${error}`,
+        'Failed to retrieve messages'
+      ));
+    }
+  }
+
+  /**
+   * Batch update message statuses for performance
+   */
+  async batchUpdateMessageStatus(updates: MessageStatusUpdate[]): Promise<Result<void>> {
+    try {
+      const sessionUpdates = new Map<string, StoredMessage[]>();
+
+      // Group updates by session for efficient persistence
+      for (const update of updates) {
+        let targetMessage: StoredMessage | undefined;
+        let targetSessionId: string | undefined;
+
+        // Find the message
+        for (const [sessionId, messages] of this.sessions) {
+          const message = messages.find(m => m.id === update.messageId);
+          if (message) {
+            targetMessage = message;
+            targetSessionId = sessionId;
+            break;
+          }
+        }
+
+        if (targetMessage && targetSessionId) {
+          // Apply status update
+          targetMessage.status = update.status;
+          
+          if (!targetMessage.statusTimestamps) {
+            targetMessage.statusTimestamps = {};
+          }
+
+          switch (update.status) {
+            case MessageStatus.SENT:
+              targetMessage.statusTimestamps.sentAt = update.timestamp;
+              targetMessage.deliveryStatus = 'sent';
+              break;
+            case MessageStatus.DELIVERED:
+              targetMessage.statusTimestamps.deliveredAt = update.timestamp;
+              targetMessage.deliveryStatus = 'delivered';
+              break;
+            case MessageStatus.READ:
+              targetMessage.statusTimestamps.readAt = update.timestamp;
+              targetMessage.readAt = update.timestamp;
+              break;
+            case MessageStatus.FAILED:
+              targetMessage.statusTimestamps.failedAt = update.timestamp;
+              targetMessage.deliveryStatus = 'failed';
+              targetMessage.errorMessage = update.error;
+              break;
+          }
+
+          // Track which sessions need to be persisted
+          if (!sessionUpdates.has(targetSessionId)) {
+            sessionUpdates.set(targetSessionId, this.sessions.get(targetSessionId)!);
+          }
+        }
+      }
+
+      // Persist all updated sessions
+      const persistPromises = Array.from(sessionUpdates.entries()).map(
+        ([sessionId, messages]) => this.persistSession(sessionId, messages)
+      );
+
+      await Promise.all(persistPromises);
+
+      return createResult.success(undefined);
+    } catch (error) {
+      return createResult.error(SolConnectError.system(
+        ErrorCode.STORAGE_ERROR,
+        `Failed to batch update message statuses: ${error}`,
+        'Failed to update message statuses'
+      ));
+    }
+  }
+
+  /**
+   * Get status statistics for a session
+   */
+  async getSessionStatusStats(sessionId: string): Promise<Result<Record<MessageStatus, number>>> {
+    try {
+      const messages = this.sessions.get(sessionId);
+      if (!messages) {
+        return createResult.error(SolConnectError.validation(
+          ErrorCode.INVALID_MESSAGE_FORMAT,
+          `Session ${sessionId} not found`,
+          'Session not found'
+        ));
+      }
+
+      const stats: Record<MessageStatus, number> = {
+        [MessageStatus.SENDING]: 0,
+        [MessageStatus.SENT]: 0,
+        [MessageStatus.DELIVERED]: 0,
+        [MessageStatus.READ]: 0,
+        [MessageStatus.FAILED]: 0,
+      };
+
+      for (const message of messages) {
+        const status = message.status || MessageStatus.SENT;
+        stats[status]++;
+      }
+
+      return createResult.success(stats);
+    } catch (error) {
+      return createResult.error(SolConnectError.system(
+        ErrorCode.STORAGE_ERROR,
+        `Failed to get session status stats: ${error}`,
+        'Failed to get statistics'
+      ));
     }
   }
 

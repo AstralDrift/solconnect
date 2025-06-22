@@ -102,20 +102,60 @@ const MAX_BUFFER_SIZE: usize = 1024;
 
 ### Error Handling
 
-#### TypeScript - Result Pattern
+#### TypeScript - Enhanced Error System
 ```typescript
-// Use Result<T> pattern for error handling
+// Use Result<T> pattern with enhanced error types
 type Result<T> = { success: true; data: T } | { success: false; error: SolConnectError };
 
-// Example usage
-async function connectWallet(): Promise<Result<WalletInfo>> {
-  try {
-    const wallet = await adapter.connect();
-    return { success: true, data: wallet };
-  } catch (error) {
-    return { success: false, error: new WalletConnectionError(error.message) };
+// Error categories and recovery strategies
+enum ErrorCategory { NETWORK, CRYPTO, VALIDATION, AUTH, SYSTEM }
+
+// Enhanced error factory methods
+const error = ErrorFactory.walletConnectionFailed(
+  'Extension not available',
+  originalError,
+  { walletType: 'phantom', timestamp: Date.now() }
+);
+
+// Error recovery patterns
+if (!result.success) {
+  const error = result.error;
+  
+  // Check recovery strategy
+  switch (error.getRecoveryStrategy()) {
+    case 'retry':
+      // Automatic retry with exponential backoff
+      break;
+    case 'manual':
+      // User action required
+      showUserPrompt(error.userMessage);
+      break;
+    case 'none':
+      // Fatal error
+      logFatalError(error);
+      break;
   }
+  
+  // Access error chain for debugging
+  const errorChain = error.getErrorChain();
+  errorChain.forEach(err => console.log(err.message));
 }
+
+// Retry utilities
+const retryUtility = RetryUtility.forNetworkOperations();
+const result = await retryUtility.execute(
+  async () => await sdk.sendMessage(sessionId, text),
+  {
+    onRetry: (error, attempt) => console.log(`Retry ${attempt}: ${error.message}`),
+    shouldRetry: (error) => error.recoverable
+  }
+);
+
+// Circuit breaker pattern
+const circuitBreaker = CircuitBreaker.forNetworkOperations();
+const result = await circuitBreaker.execute(async () => {
+  return await messageBus.sendMessage(session, plaintext);
+});
 ```
 
 #### Rust - Standard Error Handling

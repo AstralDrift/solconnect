@@ -12,15 +12,48 @@ export interface ChatSession {
   sharedKey: Uint8Array;
 }
 
+export enum MessageStatus {
+  SENDING = 'sending',
+  SENT = 'sent',
+  DELIVERED = 'delivered',
+  READ = 'read',
+  FAILED = 'failed'
+}
+
+export interface MessageStatusTimestamps {
+  sentAt?: string;
+  deliveredAt?: string;
+  readAt?: string;
+  failedAt?: string;
+}
+
 export interface Message {
+  id?: string;
   sender_wallet: string;
   ciphertext: string;
   timestamp?: string;
   session_id?: string;
   content_type?: string;
-  status?: 'sent' | 'delivered' | 'read';
+  status?: MessageStatus;
+  statusTimestamps?: MessageStatusTimestamps;
+  // Legacy fields for backward compatibility
   readAt?: string;
   deliveredAt?: string;
+}
+
+export interface MessageStatusUpdate {
+  messageId: string;
+  sessionId: string;
+  status: MessageStatus;
+  timestamp: string;
+  userId: string;
+  error?: string;
+}
+
+export interface StatusUpdateEvent {
+  type: 'status_update';
+  data: MessageStatusUpdate;
+  encrypted: boolean;
 }
 
 export interface ReadReceipt {

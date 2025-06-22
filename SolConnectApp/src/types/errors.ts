@@ -16,7 +16,9 @@ export enum ErrorCode {
   // Network errors
   CONNECTION_FAILED = 'CONNECTION_FAILED',
   TIMEOUT = 'TIMEOUT',
+  NETWORK_TIMEOUT = 'NETWORK_TIMEOUT',
   RELAY_DISCONNECTED = 'RELAY_DISCONNECTED',
+  MESSAGE_DELIVERY_FAILED = 'MESSAGE_DELIVERY_FAILED',
   
   // Crypto errors
   CRYPTO_ERROR = 'CRYPTO_ERROR',
@@ -24,6 +26,7 @@ export enum ErrorCode {
   DECRYPTION_FAILED = 'DECRYPTION_FAILED',
   INVALID_KEY = 'INVALID_KEY',
   KEY_DERIVATION_FAILED = 'KEY_DERIVATION_FAILED',
+  SESSION_CREATION_FAILED = 'SESSION_CREATION_FAILED',
   
   // Validation errors
   INVALID_MESSAGE_FORMAT = 'INVALID_MESSAGE_FORMAT',
@@ -32,11 +35,14 @@ export enum ErrorCode {
   
   // Auth errors
   WALLET_NOT_CONNECTED = 'WALLET_NOT_CONNECTED',
+  WALLET_CONNECTION_FAILED = 'WALLET_CONNECTION_FAILED',
   INVALID_SIGNATURE = 'INVALID_SIGNATURE',
   SESSION_EXPIRED = 'SESSION_EXPIRED',
   
   // System errors
   STORAGE_ERROR = 'STORAGE_ERROR',
+  SDK_NOT_INITIALIZED = 'SDK_NOT_INITIALIZED',
+  SDK_INITIALIZATION_FAILED = 'SDK_INITIALIZATION_FAILED',
   UNKNOWN_ERROR = 'UNKNOWN_ERROR',
   NOT_IMPLEMENTED = 'NOT_IMPLEMENTED'
 }
@@ -65,6 +71,68 @@ export class SolConnectError extends Error implements AppError {
     super(message);
     this.name = 'SolConnectError';
     this.timestamp = Date.now();
+  }
+
+  /**
+   * Get the full error chain starting from this error
+   */
+  getErrorChain(): SolConnectError[] {
+    const chain: SolConnectError[] = [this];
+    let current = this.originalError;
+    
+    while (current && current instanceof SolConnectError) {
+      chain.push(current);
+      current = current.originalError;
+    }
+    
+    return chain;
+  }
+
+  /**
+   * Get recovery strategy based on error type and context
+   */
+  getRecoveryStrategy(): 'retry' | 'manual' | 'none' {
+    if (!this.recoverable) return 'none';
+    
+    switch (this.category) {
+      case ErrorCategory.NETWORK:
+        return 'retry';
+      case ErrorCategory.AUTH:
+        return this.code === ErrorCode.WALLET_NOT_CONNECTED ? 'manual' : 'retry';
+      case ErrorCategory.VALIDATION:
+        return 'manual';
+      default:
+        return 'none';
+    }
+  }
+
+  /**
+   * Determine if this error should be retried
+   */
+  shouldRetry(retryCount: number = 0, maxRetries: number = 3): boolean {
+    if (!this.recoverable || retryCount >= maxRetries) return false;
+    
+    const strategy = this.getRecoveryStrategy();
+    return strategy === 'retry';
+  }
+
+  /**
+   * Get appropriate retry delay based on attempt count
+   */
+  getRetryDelayMs(attempt: number = 0): number {
+    const baseDelay = 1000; // 1 second
+    const maxDelay = 30000; // 30 seconds
+    
+    switch (this.category) {
+      case ErrorCategory.NETWORK:
+        // Exponential backoff: 1s, 2s, 4s, 8s, etc.
+        return Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
+      case ErrorCategory.AUTH:
+        // Fixed delay for auth errors
+        return 2000;
+      default:
+        return baseDelay;
+    }
   }
 
   static network(code: ErrorCode, message: string, userMessage: string, context?: Record<string, any>): SolConnectError {
@@ -167,5 +235,110 @@ export const ErrorFactory = {
       `Message size ${size} exceeds maximum ${maxSize}`,
       `Message is too large. Maximum size is ${Math.floor(maxSize / 1024)}KB.`,
       { size, maxSize }
-    )
+    ),
+
+  // Enhanced error factory methods for specific scenarios
+  sdkNotInitialized: (operation: string, context?: Record<string, any>): SolConnectError => {
+    const enhancedContext = {
+      operation,
+      timestamp: Date.now(),
+      ...context
+    };
+    
+    return SolConnectError.system(
+      ErrorCode.SDK_NOT_INITIALIZED,
+      `SDK not initialized for operation: ${operation}`,
+      'Please initialize the SDK before performing this operation.',
+      enhancedContext
+    );
+  },
+
+  walletConnectionFailed: (reason: string, originalError?: Error, context?: Record<string, any>): SolConnectError => {
+    const enhancedContext = {
+      reason,
+      timestamp: Date.now(),
+      ...context
+    };
+
+    return new SolConnectError(
+      ErrorCategory.AUTH,
+      ErrorCode.WALLET_CONNECTION_FAILED,
+      `Wallet connection failed: ${reason}`,
+      'Failed to connect to your wallet. Please check that your wallet is available and try again.',
+      true,
+      enhancedContext,
+      originalError
+    );
+  },
+
+  sessionCreationFailed: (originalError: Error, context?: Record<string, any>): SolConnectError => {
+    const enhancedContext = {
+      timestamp: Date.now(),
+      originalErrorMessage: originalError.message,
+      ...context
+    };
+
+    return new SolConnectError(
+      ErrorCategory.CRYPTO,
+      ErrorCode.SESSION_CREATION_FAILED,
+      `Session creation failed: ${originalError.message}`,
+      'Unable to create secure chat session. Please try again.',
+      false, // Crypto errors are typically not recoverable
+      enhancedContext,
+      originalError
+    );
+  },
+
+  messageDeliveryFailed: (messageId: string, originalError?: Error, context?: Record<string, any>): SolConnectError => {
+    const enhancedContext = {
+      messageId,
+      timestamp: Date.now(),
+      originalErrorMessage: originalError?.message,
+      ...context
+    };
+
+    return new SolConnectError(
+      ErrorCategory.NETWORK,
+      ErrorCode.MESSAGE_DELIVERY_FAILED,
+      `Message delivery failed for message ${messageId}: ${originalError?.message || 'Unknown error'}`,
+      'Failed to deliver your message. It will be retried automatically.',
+      true, // Network errors are recoverable
+      enhancedContext,
+      originalError
+    );
+  },
+
+  networkTimeout: (operation: string, timeoutMs: number, context?: Record<string, any>): SolConnectError => {
+    const enhancedContext = {
+      operation,
+      timeoutMs,
+      timestamp: Date.now(),
+      ...context
+    };
+
+    return SolConnectError.network(
+      ErrorCode.NETWORK_TIMEOUT,
+      `Operation '${operation}' timed out after ${timeoutMs}ms`,
+      `The operation timed out. Please check your internet connection and try again.`,
+      enhancedContext
+    );
+  },
+
+  sdkInitializationFailed: (originalError: Error, context?: Record<string, any>): SolConnectError => {
+    const enhancedContext = {
+      timestamp: Date.now(),
+      originalErrorMessage: originalError.message,
+      ...context
+    };
+
+    return new SolConnectError(
+      ErrorCategory.SYSTEM,
+      ErrorCode.SDK_INITIALIZATION_FAILED,
+      `SDK initialization failed: ${originalError.message}`,
+      'Failed to initialize SolConnect. Please check your configuration and try again.',
+      true,
+      enhancedContext,
+      originalError
+    );
+  }
 };

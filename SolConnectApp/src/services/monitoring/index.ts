@@ -7,7 +7,7 @@ export { MetricsCollector, getMetricsCollector, Metrics } from './MetricsCollect
 export { ErrorTracker, getErrorTracker } from './ErrorTracker';
 export { AlertingSystem, getAlertingSystem } from './AlertingSystem';
 export { Logger, getLogger, getComponentLogger, appLogger, sdkLogger, networkLogger, uiLogger, perfLogger, Log } from './Logger';
-export { MonitoringDashboard } from './MonitoringDashboard';
+export { MonitoringDashboard } from '../../components/monitoring/MonitoringDashboard';
 
 // Type exports
 export type { 

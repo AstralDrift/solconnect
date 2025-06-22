@@ -1,4 +1,4 @@
-import { ChatSession, Message } from '../types';
+import { ChatSession, Message, MessageStatus, MessageStatusUpdate } from '../types';
 
 export interface AuthState {
   wallet: string | null;
@@ -33,11 +33,19 @@ export interface RoomsState {
 
 export interface MessagesState {
   messages: Record<string, Message[]>; // roomId -> messages
+  optimisticUpdates: Record<string, MessageStatus>; // messageId -> status for optimistic updates
+  statusUpdateQueue: MessageStatusUpdate[]; // Queue for pending status updates
   isLoading: boolean;
   error: string | null;
   setMessages: (roomId: string, messages: Message[]) => void;
   addMessage: (roomId: string, message: Message) => void;
   addMessages: (roomId: string, messages: Message[]) => void;
+  updateMessageStatus: (roomId: string, messageId: string, status: MessageStatus, optimistic?: boolean) => void;
+  batchUpdateMessageStatus: (updates: MessageStatusUpdate[]) => void;
+  clearOptimisticUpdate: (messageId: string) => void;
+  queueStatusUpdate: (update: MessageStatusUpdate) => void;
+  processStatusUpdateQueue: () => void;
+  getMessageStatus: (messageId: string) => MessageStatus | null;
   setLoading: (isLoading: boolean) => void;
   setError: (error: string | null) => void;
 }
