@@ -3,7 +3,7 @@
  * Coordinates between transport layer, encryption, state management, and network monitoring
  */
 
-import { ChatSession, Message } from '../types';
+import { ChatSession, Message, MessageStatus, MessageStatusUpdate } from '../types';
 import { SolConnectError, ErrorCode, Result, createResult } from '../types/errors';
 import { MessageTransport, TransportFactory, DeliveryReceipt, MessageHandler, Subscription, WebSocketTransport } from './transport/MessageTransport';
 import { MessageStorage, getMessageStorage } from './storage/MessageStorage';
@@ -25,6 +25,8 @@ export interface MessageBusConfig {
   enableNetworkManager?: boolean;
   deviceId?: string;
   encryptionPassword?: string; // Password for key storage encryption
+  enableStatusTracking?: boolean; // Enable message status tracking
+  statusUpdateCallback?: (update: MessageStatusUpdate) => void; // Callback for status updates
 }
 
 export interface MessageBusState {
@@ -67,6 +69,10 @@ export class MessageBus {
   // Network state listeners
   private networkStateListener?: () => void;
   private queueProcessorUnsubscribe?: () => void;
+  
+  // Status tracking
+  private statusUpdateCallback?: (update: MessageStatusUpdate) => void;
+  private messageStatusEventHandlers = new Map<string, (update: MessageStatusUpdate) => void>();
 
   constructor(config: MessageBusConfig) {
     this.config = {
@@ -78,8 +84,12 @@ export class MessageBus {
       enableNetworkManager: true,
       deviceId: this.generateDeviceId(),
       encryptionPassword: undefined,
+      enableStatusTracking: true,
+      statusUpdateCallback: undefined,
       ...config
     };
+
+    this.statusUpdateCallback = this.config.statusUpdateCallback;
 
     this.deviceId = this.config.deviceId;
     this.transport = TransportFactory.create(this.config.transportType);
@@ -645,6 +655,243 @@ export class MessageBus {
   }
 
   /**
+   * Update message status
+   */
+  async updateMessageStatus(messageId: string, status: MessageStatus): Promise<Result<void>> {
+    try {
+      this.logger.info('Updating message status', { messageId, status });
+
+      let sessionId: string | null = null;
+
+      // Update in database if available
+      if (this.database) {
+        // Find the session ID for this message
+        const sessions = await this.database.getAllSessions();
+        
+        for (const session of sessions) {
+          const messages = await this.database.getMessages(session.session_id);
+          if (messages.some(msg => msg.id === messageId)) {
+            sessionId = session.session_id;
+            break;
+          }
+        }
+        
+        if (sessionId) {
+          await this.database.updateMessageStatus(sessionId, messageId, status);
+        }
+      }
+
+      // Update in storage if available
+      if (this.storage && sessionId) {
+        await this.storage.updateMessageStatus(sessionId, messageId, status);
+      }
+
+      return createResult.success(undefined);
+    } catch (error) {
+      this.logger.error('Failed to update message status', error);
+      return createResult.error(SolConnectError.system(
+        ErrorCode.STORAGE_ERROR,
+        `Failed to update message status: ${error}`,
+        'Failed to update message status',
+        { error: error?.toString() }
+      ));
+    }
+  }
+
+  /**
+   * Batch update message statuses
+   */
+  async batchUpdateMessageStatus(updates: MessageStatusUpdate[]): Promise<Result<void>> {
+    try {
+      this.logger.info('Batch updating message statuses', { count: updates.length });
+
+      // Group updates by session
+      const updatesBySession = new Map<string, MessageStatusUpdate[]>();
+      
+      for (const update of updates) {
+        // Find session for each message
+        if (this.database) {
+          const sessions = await this.database.getAllSessions();
+          for (const session of sessions) {
+            const messages = await this.database.getMessages(session.session_id);
+            if (messages.some(msg => msg.id === update.messageId)) {
+              const sessionUpdates = updatesBySession.get(session.session_id) || [];
+              sessionUpdates.push(update);
+              updatesBySession.set(session.session_id, sessionUpdates);
+              break;
+            }
+          }
+        }
+      }
+
+      // Apply updates for each session
+      for (const [sessionId, sessionUpdates] of updatesBySession) {
+        for (const update of sessionUpdates) {
+          if (this.database) {
+            await this.database.updateMessageStatus(sessionId, update.messageId, update.status);
+          }
+          if (this.storage) {
+            await this.storage.updateMessageStatus(sessionId, update.messageId, update.status);
+          }
+        }
+      }
+
+      return createResult.success(undefined);
+    } catch (error) {
+      this.logger.error('Failed to batch update message statuses', error);
+      return createResult.error(SolConnectError.system(
+        ErrorCode.STORAGE_ERROR,
+        `Failed to batch update message statuses: ${error}`,
+        'Failed to update message statuses',
+        { error: error?.toString() }
+      ));
+    }
+  }
+
+  /**
+   * Get message status
+   */
+  async getMessageStatus(messageId: string): Promise<Result<MessageStatus | null>> {
+    try {
+      if (this.database) {
+        const sessions = await this.database.getAllSessions();
+        
+        for (const session of sessions) {
+          const messages = await this.database.getMessages(session.session_id);
+          const message = messages.find(msg => msg.id === messageId);
+          
+          if (message) {
+            return createResult.success(message.status || MessageStatus.SENT);
+          }
+        }
+      }
+
+      return createResult.success(null);
+    } catch (error) {
+      this.logger.error('Failed to get message status', error);
+      return createResult.error(SolConnectError.system(
+        ErrorCode.STORAGE_ERROR,
+        `Failed to get message status: ${error}`,
+        'Failed to get message status',
+        { error: error?.toString() }
+      ));
+    }
+  }
+
+  /**
+   * Broadcast status update to other devices
+   */
+  async broadcastStatusUpdate(update: MessageStatusUpdate): Promise<Result<void>> {
+    try {
+      this.logger.info('Broadcasting status update', update);
+
+      // Send via WebSocket relay if status tracking is enabled
+      if (this.config.enableStatusTracking && this.transport instanceof WebSocketTransport) {
+        // Find session ID for this message
+        let sessionId: string | null = null;
+        if (this.database) {
+          const sessions = await this.database.getAllSessions();
+          for (const session of sessions) {
+            const messages = await this.database.getMessages(session.session_id);
+            if (messages.some(msg => msg.id === update.messageId)) {
+              sessionId = session.session_id;
+              break;
+            }
+          }
+        }
+
+        if (sessionId) {
+          // Create relay status update message
+          const relayMessage = {
+            type: 'status_update',
+            messageId: update.messageId,
+            status: update.status,
+            timestamp: update.timestamp,
+            roomId: sessionId
+          };
+
+          // Send directly via WebSocket transport
+          try {
+            await this.transport.sendRawMessage(relayMessage);
+            this.logger.debug('Status update sent via WebSocket relay', relayMessage);
+          } catch (relayError) {
+            this.logger.warn('Failed to send status update via relay, falling back to sync protocol', relayError);
+            
+            // Fallback to sync protocol
+            if (this.syncManager) {
+              const syncMessage = SyncMessageFactory.createStatusUpdate(
+                this.deviceId,
+                [update]
+              );
+              const sendResult = await this.transport.sendSyncMessage(syncMessage);
+              if (!sendResult.success) {
+                this.logger.error('Failed to broadcast status update via sync protocol', sendResult.error);
+                return sendResult;
+              }
+            }
+          }
+        } else {
+          this.logger.warn('Cannot broadcast status update - session not found for message', update.messageId);
+        }
+      }
+
+      // Notify local status update handlers
+      this.notifyStatusUpdateHandlers(update);
+
+      return createResult.success(undefined);
+    } catch (error) {
+      this.logger.error('Failed to broadcast status update', error);
+      return createResult.error(SolConnectError.network(
+        ErrorCode.MESSAGE_DELIVERY_FAILED,
+        `Failed to broadcast status update: ${error}`,
+        'Failed to broadcast status update',
+        { error: error?.toString() }
+      ));
+    }
+  }
+
+  /**
+   * Subscribe to message status updates
+   */
+  onStatusUpdate(handler: (update: MessageStatusUpdate) => void): string {
+    const id = `status_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    this.messageStatusEventHandlers.set(id, handler);
+    this.logger.debug('Registered status update handler', { id });
+    return id;
+  }
+
+  /**
+   * Unsubscribe from message status updates
+   */
+  offStatusUpdate(handlerId: string): void {
+    this.messageStatusEventHandlers.delete(handlerId);
+    this.logger.debug('Unregistered status update handler', { handlerId });
+  }
+
+  /**
+   * Notify all status update handlers
+   */
+  private notifyStatusUpdateHandlers(update: MessageStatusUpdate): void {
+    // Call global callback if set
+    if (this.statusUpdateCallback) {
+      try {
+        this.statusUpdateCallback(update);
+      } catch (error) {
+        this.logger.error('Error in global status update callback', error);
+      }
+    }
+
+    // Call individual handlers
+    this.messageStatusEventHandlers.forEach((handler, id) => {
+      try {
+        handler(update);
+      } catch (error) {
+        this.logger.error('Error in status update handler', error, { handlerId: id });
+      }
+    });
+  }
+
+  /**
    * Get stored messages for a session
    */
   async getStoredMessages(sessionId: string, limit?: number): Promise<Result<Message[]>> {
@@ -830,7 +1077,7 @@ export class MessageBus {
       }
     });
 
-    // Subscribe to read receipt sync messages
+    // Subscribe to sync messages and relay events
     if (this.transport) {
       this.transport.onSyncMessage((message) => {
         if (message.type === 'read_receipt_sync') {
@@ -840,6 +1087,15 @@ export class MessageBus {
           );
         }
       });
+
+      // Handle incoming status updates from WebSocket relay
+      if (this.config.enableStatusTracking) {
+        this.transport.onRelayMessage((message) => {
+          this.handleIncomingRelayMessage(message).catch(error =>
+            this.logger.error('Failed to handle incoming relay message', error)
+          );
+        });
+      }
     }
   }
 
@@ -867,6 +1123,151 @@ export class MessageBus {
       }
     } catch (error) {
       this.logger.error('Error processing read receipts', error);
+    }
+  }
+
+  private async handleIncomingRelayMessage(message: any): Promise<void> {
+    try {
+      this.logger.debug('Handling incoming relay message', { type: message.type });
+
+      switch (message.type) {
+        case 'status_update':
+          await this.handleIncomingStatusUpdate(message);
+          break;
+          
+        case 'delivery_receipt':
+          await this.handleIncomingDeliveryReceipt(message);
+          break;
+          
+        case 'read_receipt':
+          await this.handleIncomingReadReceiptRelay(message);
+          break;
+          
+        case 'typing_indicator':
+          await this.handleIncomingTypingIndicator(message);
+          break;
+          
+        default:
+          this.logger.debug('Unknown relay message type', { type: message.type });
+      }
+    } catch (error) {
+      this.logger.error('Error handling incoming relay message', error);
+    }
+  }
+
+  private async handleIncomingStatusUpdate(message: any): Promise<void> {
+    try {
+      const { messageId, status, timestamp } = message;
+      
+      this.logger.info('Received status update', { messageId, status, timestamp });
+
+      // Update local database
+      if (this.database && message.roomId) {
+        await this.database.updateMessageStatus(message.roomId, messageId, status, timestamp);
+      }
+
+      // Update storage
+      if (this.storage && message.roomId) {
+        await this.storage.updateMessageStatus(message.roomId, messageId, status);
+      }
+
+      // Create status update object
+      const statusUpdate: MessageStatusUpdate = {
+        messageId,
+        status,
+        timestamp: timestamp || new Date().toISOString()
+      };
+
+      // Notify handlers
+      this.notifyStatusUpdateHandlers(statusUpdate);
+    } catch (error) {
+      this.logger.error('Error handling incoming status update', error);
+    }
+  }
+
+  private async handleIncomingDeliveryReceipt(message: any): Promise<void> {
+    try {
+      const { originalMessageId, recipientWallet, timestamp } = message;
+      
+      this.logger.info('Received delivery receipt', { 
+        originalMessageId, 
+        recipientWallet, 
+        timestamp 
+      });
+
+      // Update message status to delivered
+      const statusUpdate: MessageStatusUpdate = {
+        messageId: originalMessageId,
+        status: MessageStatus.DELIVERED,
+        timestamp: timestamp || new Date().toISOString()
+      };
+
+      // Update local storage
+      if (this.database && message.roomId) {
+        await this.database.updateMessageStatus(
+          message.roomId, 
+          originalMessageId, 
+          MessageStatus.DELIVERED, 
+          timestamp
+        );
+      }
+
+      // Notify handlers
+      this.notifyStatusUpdateHandlers(statusUpdate);
+    } catch (error) {
+      this.logger.error('Error handling delivery receipt', error);
+    }
+  }
+
+  private async handleIncomingReadReceiptRelay(message: any): Promise<void> {
+    try {
+      const { originalMessageId, readerWallet, timestamp } = message;
+      
+      this.logger.info('Received read receipt from relay', { 
+        originalMessageId, 
+        readerWallet, 
+        timestamp 
+      });
+
+      // Update message status to read
+      const statusUpdate: MessageStatusUpdate = {
+        messageId: originalMessageId,
+        status: MessageStatus.READ,
+        timestamp: timestamp || new Date().toISOString()
+      };
+
+      // Update local storage
+      if (this.database && message.roomId) {
+        await this.database.updateMessageStatus(
+          message.roomId, 
+          originalMessageId, 
+          MessageStatus.READ, 
+          timestamp
+        );
+      }
+
+      // Notify handlers
+      this.notifyStatusUpdateHandlers(statusUpdate);
+    } catch (error) {
+      this.logger.error('Error handling read receipt from relay', error);
+    }
+  }
+
+  private async handleIncomingTypingIndicator(message: any): Promise<void> {
+    try {
+      const { userWallet, isTyping, roomId } = message;
+      
+      this.logger.debug('Received typing indicator', { 
+        userWallet, 
+        isTyping, 
+        roomId 
+      });
+
+      // Notify typing indicator handlers (if implemented)
+      // This could be extended to support typing indicators in the UI
+      
+    } catch (error) {
+      this.logger.error('Error handling typing indicator', error);
     }
   }
 

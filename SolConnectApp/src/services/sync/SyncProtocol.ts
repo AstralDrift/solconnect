@@ -31,7 +31,8 @@ export enum SyncMessageType {
   READ_RECEIPT_SYNC = 'read_receipt_sync', // Sync read receipts
   
   // Bidirectional
-  SYNC_HEARTBEAT = 'sync_heartbeat'     // Keep sync connection alive
+  SYNC_HEARTBEAT = 'sync_heartbeat',    // Keep sync connection alive
+  STATUS_UPDATE = 'status_update'       // Message status update
 }
 
 /**
@@ -197,6 +198,18 @@ export interface ReadReceiptSyncMessage extends SyncMessage {
 }
 
 /**
+ * Status update message for message status changes
+ */
+export interface StatusUpdateMessage extends SyncMessage {
+  type: SyncMessageType.STATUS_UPDATE;
+  updates: Array<{
+    messageId: string;
+    status: string;
+    timestamp: string;
+  }>;
+}
+
+/**
  * Union type for all sync messages
  */
 export type AnySyncMessage = 
@@ -210,7 +223,8 @@ export type AnySyncMessage =
   | DeviceListMessage
   | SyncHeartbeatMessage
   | ReadReceiptMessage
-  | ReadReceiptSyncMessage;
+  | ReadReceiptSyncMessage
+  | StatusUpdateMessage;
 
 /**
  * Sync protocol configuration
@@ -435,6 +449,24 @@ export class SyncMessageFactory {
       timestamp: Date.now(),
       messageId: `read-sync-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       receipts
+    };
+  }
+
+  static createStatusUpdate(
+    deviceId: string,
+    updates: Array<{
+      messageId: string;
+      status: string;
+      timestamp: string;
+    }>
+  ): StatusUpdateMessage {
+    return {
+      type: SyncMessageType.STATUS_UPDATE,
+      sessionId: '', // Will be filled by the transport layer
+      deviceId,
+      timestamp: Date.now(),
+      messageId: `status-upd-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      updates
     };
   }
 } 
