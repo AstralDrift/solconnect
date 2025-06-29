@@ -473,8 +473,104 @@ lsof -i :8080  # Relay server
 - [Next.js Documentation](https://nextjs.org/docs)
 - [React Native Documentation](https://reactnative.dev)
 
+## 🤖 AI Agent Optimization
+
+SolConnect features a revolutionary **Universal AI Agent Heaven** framework that transforms how you work with the codebase. This section provides Claude-specific optimization strategies.
+
+### Claude-Specific Optimizations
+
+#### Parallel Tool Execution
+Claude excels at running multiple tools simultaneously. For SolConnect development:
+
+```markdown
+## Recommended Claude Workflow for SolConnect
+
+1. **Parallel Context Loading**: Read multiple relevant files simultaneously
+   - `src/services/SolConnectSDK.ts` (main API)
+   - `src/services/MessageBus.ts` (message coordination)
+   - `src/services/crypto/SignalProtocol.ts` (encryption)
+   - `src/services/transport/MessageTransport.ts` (networking)
+
+2. **Comprehensive Analysis**: Use Claude's deep analysis capabilities
+   - Analyze architectural patterns across components
+   - Consider security implications in parallel with feature development
+   - Evaluate performance impact while implementing features
+
+3. **Tool Coordination**: Execute file operations, searches, and git commands concurrently
+   - Read documentation while analyzing code
+   - Run tests while implementing features
+   - Update documentation while reviewing changes
+```
+
+#### Agent Specialization for Claude
+
+Choose your Claude agent specialization based on your work focus:
+
+**🔒 Crypto Specialist Claude**
+```bash
+# Optimize Claude for encryption and security work
+export CLAUDE_SPECIALIZATION=crypto
+export CLAUDE_PRIORITY_CONTEXT="src/services/crypto/,core/solchat_protocol/src/crypto.rs"
+export CLAUDE_TOOLS="crypto-analyzer,security-scanner,key-validator"
+```
+
+**🎨 UI Specialist Claude**
+```bash
+# Optimize Claude for React/React Native development
+export CLAUDE_SPECIALIZATION=ui
+export CLAUDE_PRIORITY_CONTEXT="src/components/,src/screens/,apps/solchat_mobile/"
+export CLAUDE_TOOLS="component-analyzer,accessibility-checker,performance-profiler"
+```
+
+**📊 Storage Specialist Claude**
+```bash
+# Optimize Claude for database and storage work
+export CLAUDE_SPECIALIZATION=storage
+export CLAUDE_PRIORITY_CONTEXT="src/services/storage/,database/,src/services/database/"
+export CLAUDE_TOOLS="query-optimizer,data-validator,migration-generator"
+```
+
+#### Self-Improving Documentation Integration
+
+Claude can leverage SolConnect's living documentation system:
+
+- **Context-Aware Assistance**: Documentation adapts to your specific questions and tasks
+- **Pattern Recognition**: Learn from successful implementations in the codebase
+- **Automatic Updates**: Documentation evolves based on Claude's development sessions
+- **Cross-Agent Learning**: Benefit from insights gained by other AI agent types
+
+#### Advanced Claude Features
+
+**🧠 Predictive Assistance**
+```markdown
+Claude can predict what you'll need next based on:
+- Current task analysis
+- Historical development patterns
+- SolConnect-specific workflows
+- Performance and security considerations
+```
+
+**🔄 Error Recovery**
+```markdown
+Claude's error recovery includes:
+- Intelligent debugging with SolConnect context
+- Security-focused error analysis for crypto operations
+- Performance-aware solutions for mobile optimization
+- Cross-platform compatibility considerations
+```
+
+### AI Agent Documentation
+
+For comprehensive AI agent guidance, see:
+
+- **[AI Agent Guide](docs/AI_AGENT_GUIDE.md)** - Introduction to AI-powered development
+- **[AI Agent Setup](docs/AI_AGENT_SETUP.md)** - Platform-specific configuration including Claude optimization
+- **[Self-Improving Systems](docs/SELF_IMPROVING_SYSTEMS.md)** - How living documentation works
+- **[Intelligence Systems](docs/INTELLIGENCE_SYSTEMS.md)** - Advanced AI features and capabilities
+- **[AI Optimization Guide](docs/AI_OPTIMIZATION_GUIDE.md)** - Repository-specific optimization strategies
+- **[Developer Workflows](docs/DEVELOPER_WORKFLOWS.md)** - AI-integrated development processes
+
 ## Contact
 
 For questions or support:
-- GitHub Issues: [Project Issues](https://github.com/yourusername/solconnect/issues)
-- Team Discord: [Join Discord](https://discord.gg/solconnect)
+- 🐛 Issues: [GitHub Issues](https://github.com/micahoates/SolConnect/issues)
