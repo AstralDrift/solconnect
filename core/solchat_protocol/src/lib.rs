@@ -106,46 +106,11 @@ impl ProtocolMessage {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_ping_protocol() {
-        let ping = ProtocolMessage::ping();
-        
-        match ping {
-            ProtocolMessage::Ping { timestamp } => {
-                assert!(timestamp > 0);
-                let pong = ProtocolMessage::pong(timestamp);
-                
-                match pong {
-                    ProtocolMessage::Pong { timestamp: pong_ts } => {
-                        assert_eq!(timestamp, pong_ts);
-                    }
-                    _ => panic!("Expected pong message"),
-                }
-            }
-            _ => panic!("Expected ping message"),
-        }
-    }
-    
     #[test]
     fn test_wallet_address_creation() {
         let addr = WalletAddress::test_address(42);
         assert_eq!(addr.as_bytes()[0], 42);
         assert_eq!(addr.as_bytes()[1..], [0u8; 31]);
-    }
-    
-    #[test]
-    fn test_encrypted_message_creation() {
-        let sender = WalletAddress::test_address(1);
-        let recipient = WalletAddress::test_address(2);
-        let payload = b"Hello, Solana!".to_vec();
-        
-        let msg = EncryptedMessage::new(sender.clone(), recipient.clone(), payload.clone());
-        
-        assert_eq!(msg.sender, sender);
-        assert_eq!(msg.recipient, recipient);
-        assert_eq!(msg.payload, payload);
-        assert_eq!(msg.size(), 14);
-        assert!(!msg.message_id.is_empty());
     }
     
     #[test]

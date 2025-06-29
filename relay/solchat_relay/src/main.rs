@@ -3,7 +3,9 @@ use clap::Parser;
 use hyper::{Body, Request, Response, Server};
 use hyper::service::{make_service_fn, service_fn};
 use quinn::{Endpoint, ServerConfig};
-use solchat_protocol::{ChatMessage, AckMessage};
+use solchat_protocol::messages::{ChatMessage, AckMessage, ReadReceipt, PingMessage, PongMessage};
+use solchat_protocol::messages::proto::ProtocolMessage;
+use solchat_protocol::WalletAddress;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -245,36 +247,69 @@ async fn handle_stream(
         
         debug!("📨 Received {} bytes", len);
         
-        // Try to parse as ChatMessage first
+        // Try to parse as ProtocolMessage
         match prost::Message::decode(data) {
-            Ok(chat_msg) => {
-                if let Err(e) = handle_chat_message(chat_msg, send, &state, remote_addr, client_tx.clone()).await {
-                    error!("Failed to handle chat message: {}", e);
-                    state.metrics.record_message_failed();
-                } else {
-                    let duration = start_time.elapsed().as_secs_f64();
-                    state.metrics.record_latency(duration);
-                    state.metrics.record_message_processed(len, "ChatMessage");
+            Ok(protocol_msg) => {
+                match protocol_msg {
+                    ProtocolMessage::Chat(chat_msg) => {
+                        if let Err(e) = handle_chat_message(chat_msg, send, &state, remote_addr, client_tx.clone()).await {
+                            error!("Failed to handle chat message: {}", e);
+                            state.metrics.record_message_failed();
+                        } else {
+                            let duration = start_time.elapsed().as_secs_f64();
+                            state.metrics.record_latency(duration);
+                            state.metrics.record_message_processed(len, "ChatMessage");
+                        }
+                    },
+                    ProtocolMessage::Ack(ack_msg) => {
+                        if let Err(e) = handle_ack_message(ack_msg, send, &state).await {
+                            error!("Failed to handle ack message: {}", e);
+                            state.metrics.record_message_failed();
+                        } else {
+                            let duration = start_time.elapsed().as_secs_f64();
+                            state.metrics.record_latency(duration);
+                            state.metrics.record_message_processed(len, "AckMessage");
+                        }
+                    },
+                    ProtocolMessage::ReadReceipt(read_receipt_msg) => {
+                        if let Err(e) = handle_read_receipt_message(read_receipt_msg, send, &state).await {
+                            error!("Failed to handle read receipt message: {}", e);
+                            state.metrics.record_message_failed();
+                        } else {
+                            let duration = start_time.elapsed().as_secs_f64();
+                            state.metrics.record_latency(duration);
+                            state.metrics.record_message_processed(len, "ReadReceiptMessage");
+                        }
+                    },
+                    ProtocolMessage::Ping(ping_msg) => {
+                        if let Err(e) = handle_ping_message(ping_msg, send, &state).await {
+                            error!("Failed to handle ping message: {}", e);
+                            state.metrics.record_message_failed();
+                        } else {
+                            let duration = start_time.elapsed().as_secs_f64();
+                            state.metrics.record_latency(duration);
+                            state.metrics.record_message_processed(len, "PingMessage");
+                        }
+                    },
+                    ProtocolMessage::Pong(pong_msg) => {
+                        if let Err(e) = handle_pong_message(pong_msg, send, &state).await {
+                            error!("Failed to handle pong message: {}", e);
+                            state.metrics.record_message_failed();
+                        } else {
+                            let duration = start_time.elapsed().as_secs_f64();
+                            state.metrics.record_latency(duration);
+                            state.metrics.record_message_processed(len, "PongMessage");
+                        }
+                    },
+                    _ => {
+                        warn!("Unsupported protocol message type received");
+                        state.metrics.record_message_failed();
+                    }
                 }
             }
-            Err(_) => {
-                // If not a ChatMessage, try legacy format for backwards compatibility
-                match serde_json::from_slice::<solchat_protocol::ProtocolMessage>(data) {
-                    Ok(legacy_msg) => {
-                        handle_legacy_message(legacy_msg, send, &state).await?;
-                        let duration = start_time.elapsed().as_secs_f64();
-                        state.metrics.record_latency(duration);
-                        state.metrics.record_message_processed(len, "Legacy");
-                    }
-                    Err(e) => {
-                        warn!("Failed to parse message: {}", e);
-                        state.metrics.record_message_failed();
-                        
-                        // Echo raw bytes for debugging
-                        send.write_all(data).await?;
-                        state.metrics.record_bytes_sent(len);
-                    }
-                }
+            Err(e) => {
+                warn!("Failed to decode protocol message: {}", e);
+                state.metrics.record_message_failed();
             }
         }
     }
@@ -325,11 +360,11 @@ async fn handle_chat_message(
     }
     
     // Route the message
-    let status = state.router.route_message(chat_msg.clone(), remote_addr).await?;
+    let status = state.router.route_message(RelayMessage::Chat(chat_msg.clone()), remote_addr).await?;
     
     // Send acknowledgment
-    let ack = AckMessage::new(chat_msg.id, status);
-    send_ack_message(ack, send, state).await?;
+    let ack = AckMessage::new(chat_msg.id.clone(), status);
+    handle_ack_message(ack, send, state).await?;
     
     Ok(())
 }

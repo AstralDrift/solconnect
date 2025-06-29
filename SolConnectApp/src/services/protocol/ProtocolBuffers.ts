@@ -243,204 +243,35 @@ export class ProtocolBufferCodec {
   }
 
   /**
-   * Check if a message should be processed (not expired)
+   * Validate a read receipt message
    */
-  shouldProcessMessage(message: ChatMessage): boolean {
-    if (message.ttl === 0) return true; // No expiry
-    
-    const ageSeconds = (Date.now() - message.timestamp) / 1000;
-    return ageSeconds <= message.ttl;
-  }
+  validateReadReceipt(message: ReadReceipt): Result<void> {
+    const errors: string[] = [];
 
-  /**
-   * Get human-readable status string
-   */
-  getStatusString(status: AckStatus): string {
-    switch (status) {
-      case AckStatus.DELIVERED:
-        return 'Delivered';
-      case AckStatus.FAILED:
-        return 'Failed';
-      case AckStatus.EXPIRED:
-        return 'Expired';
-      case AckStatus.REJECTED:
-        return 'Rejected';
-      default:
-        return 'Unknown';
-    }
-  }
-
-  /**
-   * Convert message to JSON for transport (temporary until protobuf is ready)
-   */
-  private messageToJson(message: ProtocolMessage): any {
-    return {
-      type: message.type,
-      version: message.version,
-      timestamp: message.timestamp,
-      payload: {
-        ...message.payload,
-        // Convert Uint8Arrays to base64 strings for JSON
-        encryptedPayload: message.payload.encryptedPayload ? 
-          this.uint8ArrayToBase64((message.payload as ChatMessage).encryptedPayload) : undefined,
-        signature: message.payload.signature ? 
-          this.uint8ArrayToBase64((message.payload as ChatMessage).signature) : undefined,
-        data: (message.payload as PingMessage | PongMessage).data ?
-          this.uint8ArrayToBase64((message.payload as PingMessage | PongMessage).data!) : undefined
-      }
-    };
-  }
-
-  /**
-   * Convert JSON back to message (temporary until protobuf is ready)
-   */
-  private messageFromJson(data: any): ProtocolMessage {
-    const payload = { ...data.payload };
-    
-    // Convert base64 strings back to Uint8Arrays
-    if (payload.encryptedPayload) {
-      payload.encryptedPayload = this.base64ToUint8Array(payload.encryptedPayload);
-    }
-    if (payload.signature) {
-      payload.signature = this.base64ToUint8Array(payload.signature);
-    }
-    if (payload.data) {
-      payload.data = this.base64ToUint8Array(payload.data);
+    if (!message.id || message.id.length === 0) {
+      errors.push('Read receipt ID is required');
     }
 
-    return {
-      type: data.type,
-      version: data.version || 1,
-      timestamp: data.timestamp,
-      payload
-    };
-  }
-
-  /**
-   * Generate a unique message ID
-   */
-  private generateMessageId(): string {
-    const timestamp = Date.now().toString(36);
-    const random = Math.random().toString(36).substr(2, 9);
-    return `msg_${timestamp}_${random}`;
-  }
-
-  /**
-   * Validate Solana wallet address format
-   */
-  private isValidWalletAddress(address: string): boolean {
-    return typeof address === 'string' && 
-           address.length >= 32 && 
-           address.length <= 44 &&
-           /^[1-9A-HJ-NP-Za-km-z]+$/.test(address);
-  }
-
-  /**
-   * Convert Uint8Array to base64 string
-   */
-  private uint8ArrayToBase64(data: Uint8Array): string {
-    let binary = '';
-    for (let i = 0; i < data.byteLength; i++) {
-      binary += String.fromCharCode(data[i]);
+    if (!message.messageId || message.messageId.length === 0) {
+      errors.push('Reference message ID is required');
     }
-    return btoa(binary);
-  }
 
-  /**
-   * Convert base64 string to Uint8Array
-   */
-  private base64ToUint8Array(base64: string): Uint8Array {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
+    if (!this.isValidWalletAddress(message.readerWallet)) {
+      errors.push('Invalid reader wallet address');
     }
-    return bytes;
-  }
-}
 
-/**
- * Global codec instance
- */
-export const protocolCodec = new ProtocolBufferCodec();
+    if (!message.timestamp || message.timestamp <= 0) {
+      errors.push('Invalid timestamp');
+    }
 
-/**
- * Message factory functions for convenience
- */
-export const MessageFactory = {
-  /**
-   * Create a chat message
-   */
-  chat: (
-    senderWallet: string,
-    recipientWallet: string,
-    encryptedPayload: Uint8Array,
-    signature: Uint8Array,
-    options?: { attachmentUrl?: string; ttl?: number }
-  ): ProtocolMessage => ({
-    type: 'chat',
-    version: 1,
-    timestamp: Date.now(),
-    payload: protocolCodec.createChatMessage(
-      senderWallet,
-      recipientWallet,
-      encryptedPayload,
-      signature,
-      options
-    )
-  }),
+    if (errors.length > 0) {
+      return createResult.error(SolConnectError.validation(
+        ErrorCode.INVALID_MESSAGE_FORMAT,
+        `Read receipt validation failed: ${errors.join(', ')}`,
+        'Read receipt format is invalid',
+        { errors }
+      ));
+    }
 
-  /**
-   * Create an acknowledgment message
-   */
-  ack: (refMessageId: string, status: AckStatus): ProtocolMessage => ({
-    type: 'ack',
-    version: 1,
-    timestamp: Date.now(),
-    payload: protocolCodec.createAckMessage(refMessageId, status)
-  }),
-
-  /**
-   * Create a ping message
-   */
-  ping: (data?: Uint8Array): ProtocolMessage => ({
-    type: 'ping',
-    version: 1,
-    timestamp: Date.now(),
-    payload: protocolCodec.createPingMessage(data)
-  }),
-
-  /**
-   * Create a pong message
-   */
-  pong: (refPingId: string, data?: Uint8Array): ProtocolMessage => ({
-    type: 'pong',
-    version: 1,
-    timestamp: Date.now(),
-    payload: protocolCodec.createPongMessage(refPingId, data)
-  }),
-
-  /**
-   * Create a delivered acknowledgment
-   */
-  delivered: (refMessageId: string): ProtocolMessage =>
-    MessageFactory.ack(refMessageId, AckStatus.DELIVERED),
-
-  /**
-   * Create a failed acknowledgment
-   */
-  failed: (refMessageId: string): ProtocolMessage =>
-    MessageFactory.ack(refMessageId, AckStatus.FAILED),
-
-  /**
-   * Create an expired acknowledgment
-   */
-  expired: (refMessageId: string): ProtocolMessage =>
-    MessageFactory.ack(refMessageId, AckStatus.EXPIRED),
-
-  /**
-   * Create a rejected acknowledgment
-   */
-  rejected: (refMessageId: string): ProtocolMessage =>
-    MessageFactory.ack(refMessageId, AckStatus.REJECTED)
-};
+    return createResult.success(undefined);
+  };

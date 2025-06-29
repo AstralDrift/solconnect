@@ -259,6 +259,31 @@ export class MessageHandler implements MessageProcessor {
   }
 
   /**
+   * Process read receipt message
+   */
+  async processReadReceipt(message: ReadReceipt): Promise<Result<void>> {
+    try {
+      // Validate read receipt message
+      const validationResult = protocolCodec.validateReadReceipt(message);
+      if (!validationResult.success) {
+        return validationResult;
+      }
+
+      console.log(`[MessageHandler] Received read receipt for message ${message.messageId} from ${message.readerWallet}`);
+      // TODO: Update UI or internal state to reflect message as read
+
+      return createResult.success(undefined);
+    } catch (error) {
+      return createResult.error(SolConnectError.system(
+        ErrorCode.UNKNOWN_ERROR,
+        `Error processing read receipt: ${error}`,
+        'Failed to process read receipt',
+        { error: error?.toString() }
+      ));
+    }
+  }
+
+  /**
    * Send a message and track for acknowledgment
    */
   async sendMessage(

@@ -9,6 +9,7 @@ interface Session {
 }
 
 interface EncryptedMessage {
+  id: string;
   sender: string;
   content: string;
   timestamp: number;
@@ -46,6 +47,9 @@ const mockSDK: SolChatSDKInterface = {
         timestamp: Date.now(),
       },
     ];
+  },
+  sendProtocolMessage: async (message: Uint8Array) => {
+    console.log('Mock: Sending protocol message:', message);
   },
 };
 
