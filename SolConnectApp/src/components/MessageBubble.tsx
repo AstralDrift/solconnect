@@ -1,21 +1,71 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Message, MessageStatus } from '../types';
+import { ReactionSummary } from '../types/chat';
 import { MessageStatusIndicator } from './MessageStatusIndicator';
+import { MessageReactions } from './MessageReactions';
+import { EmojiPicker } from './EmojiPicker';
+import { getMessageBus } from '../services/MessageBus';
 
 interface MessageBubbleProps {
   message: Message;
   isOwnMessage: boolean;
   showStatusIndicator?: boolean;
   theme?: 'light' | 'dark';
+  currentUserAddress?: string;
+  sessionId?: string;
+  showReactions?: boolean;
 }
 
 export function MessageBubble({ 
   message, 
   isOwnMessage, 
   showStatusIndicator = true,
-  theme = 'light'
+  theme = 'light',
+  currentUserAddress,
+  sessionId,
+  showReactions = true
 }: MessageBubbleProps): JSX.Element {
+  const [reactions, setReactions] = useState<ReactionSummary[]>([]);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [isLoadingReactions, setIsLoadingReactions] = useState(false);
+
+  useEffect(() => {
+    if (showReactions && message.id && currentUserAddress) {
+      loadReactions();
+    }
+  }, [message.id, currentUserAddress, showReactions]);
+
+  const loadReactions = async () => {
+    if (!message.id || !currentUserAddress) return;
+
+    try {
+      setIsLoadingReactions(true);
+      const messageBus = getMessageBus();
+      const result = await messageBus.getMessageReactions(message.id, currentUserAddress);
+      
+      if (result.success) {
+        setReactions(result.data || []);
+      }
+    } catch (error) {
+      console.error('Error loading reactions:', error);
+    } finally {
+      setIsLoadingReactions(false);
+    }
+  };
+
+  const handleEmojiSelect = async (emoji: string) => {
+    if (!message.id || !sessionId || !currentUserAddress) return;
+
+    try {
+      const messageBus = getMessageBus();
+      await messageBus.addReaction(message.id, sessionId, currentUserAddress, emoji);
+      // Reactions will be updated via the MessageReactions component's event listener
+    } catch (error) {
+      console.error('Error adding reaction:', error);
+    }
+  };
+
   const getStatusTimestamp = (): string | undefined => {
     if (!message.statusTimestamps) return message.timestamp;
     
@@ -81,6 +131,29 @@ export function MessageBubble({
           </View>
         )}
       </View>
+
+      {/* Reactions */}
+      {showReactions && currentUserAddress && sessionId && message.id && (
+        <MessageReactions
+          messageId={message.id}
+          sessionId={sessionId}
+          currentUserAddress={currentUserAddress}
+          reactions={reactions}
+          theme={theme}
+          onEmojiPickerOpen={() => setShowEmojiPicker(true)}
+        />
+      )}
+
+      {/* Emoji Picker Modal */}
+      {currentUserAddress && (
+        <EmojiPicker
+          visible={showEmojiPicker}
+          onEmojiSelect={handleEmojiSelect}
+          onClose={() => setShowEmojiPicker(false)}
+          currentUserAddress={currentUserAddress}
+          theme={theme}
+        />
+      )}
     </View>
   );
 }
