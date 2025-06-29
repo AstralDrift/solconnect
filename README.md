@@ -36,8 +36,8 @@ SolConnect/
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/solconnect.git
-   cd solconnect
+   git clone https://github.com/micahoates/SolConnect.git
+   cd SolConnect
    ```
 
 2. **Install dependencies**
@@ -132,9 +132,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Support
 
-- 📧 Email: support@solconnect.com
-- 💬 Discord: [Join our community](https://discord.gg/solconnect)
-- 🐛 Issues: [GitHub Issues](https://github.com/yourusername/solconnect/issues)
+- 🐛 Issues: [GitHub Issues](https://github.com/micahoates/SolConnect/issues)
 
 ## Roadmap
 
