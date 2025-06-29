@@ -1,6 +1,7 @@
 use anyhow::Result;
 use quinn::{SendStream, RecvStream};
-use solchat_protocol::{ChatMessage, AckMessage, AckStatus, WalletAddress};
+use solchat_protocol::messages::{ChatMessage, AckMessage, AckStatus, ReadReceipt, PingMessage, PongMessage};
+use solchat_protocol::WalletAddress;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
@@ -10,10 +11,20 @@ use crate::metrics::Metrics;
 /// Maximum number of queued messages per recipient
 const MAX_QUEUED_MESSAGES: usize = 100;
 
+/// Enum to represent all routable message types
+#[derive(Clone, Debug)]
+pub enum RelayMessage {
+    Chat(ChatMessage),
+    Ack(AckMessage),
+    ReadReceipt(ReadReceipt),
+    Ping(PingMessage),
+    Pong(PongMessage),
+}
+
 /// Message to be routed
 #[derive(Clone, Debug)]
 pub struct RoutableMessage {
-    pub message: ChatMessage,
+    pub message: RelayMessage,
     pub sender_addr: SocketAddr,
 }
 
@@ -90,48 +101,106 @@ impl MessageRouter {
     /// Route a message to its recipient
     pub async fn route_message(
         &self,
-        message: ChatMessage,
+        relay_message: RelayMessage,
         sender_addr: SocketAddr,
     ) -> Result<AckStatus> {
-        // Validate the message
-        let recipient = match message.recipient() {
-            Ok(addr) => addr,
-            Err(e) => {
-                warn!("Invalid recipient address: {}", e);
-                return Ok(AckStatus::Rejected);
-            }
-        };
-        
-        let recipient_str = recipient.to_string();
-        let routable = RoutableMessage {
-            message: message.clone(),
-            sender_addr,
-        };
-        
-        // Check if recipient is online
-        let connections = self.connections.read().await;
-        if let Some(connection) = connections.get(&recipient_str) {
-            // Recipient is online, send directly
-            match connection.send_channel.send(routable.clone()).await {
-                Ok(_) => {
-                    debug!("✉️ Message routed to online recipient: {}", recipient_str);
-                    self.metrics.record_message_routed();
-                    Ok(AckStatus::Delivered)
-                }
-                Err(e) => {
-                    error!("Failed to send to recipient channel: {}", e);
-                    // Queue the message as the channel might be full
+        match relay_message {
+            RelayMessage::Chat(message) => {
+                // Validate the message
+                let recipient = message.recipient_wallet;
+                
+                let recipient_str = recipient.to_string();
+                let routable = RoutableMessage {
+                    message: RelayMessage::Chat(message.clone()),
+                    sender_addr,
+                };
+                
+                // Check if recipient is online
+                let connections = self.connections.read().await;
+                if let Some(connection) = connections.get(&recipient_str) {
+                    // Recipient is online, send directly
+                    match connection.send_channel.send(routable.clone()).await {
+                        Ok(_) => {
+                            debug!("✉️ Message routed to online recipient: {}", recipient_str);
+                            self.metrics.record_message_routed();
+                            Ok(AckStatus::Delivered)
+                        }
+                        Err(e) => {
+                            error!("Failed to send to recipient channel: {}", e);
+                            // Queue the message as the channel might be full
+                            drop(connections);
+                            self.queue_message(&recipient_str, routable).await?;
+                            Ok(AckStatus::Delivered)
+                        }
+                    }
+                } else {
+                    // Recipient is offline, queue the message
                     drop(connections);
                     self.queue_message(&recipient_str, routable).await?;
+                    debug!("📮 Message queued for offline recipient: {}", recipient_str);
                     Ok(AckStatus::Delivered)
                 }
-            }
-        } else {
-            // Recipient is offline, queue the message
-            drop(connections);
-            self.queue_message(&recipient_str, routable).await?;
-            debug!("📮 Message queued for offline recipient: {}", recipient_str);
-            Ok(AckStatus::Delivered)
+            },
+            RelayMessage::Ack(ack_message) => {
+                // Acknowledge messages are routed back to the original sender
+                let original_sender = ack_message.ref_message_id.split('-').next().unwrap_or(""); // Assuming message ID contains sender
+                let routable = RoutableMessage {
+                    message: RelayMessage::Ack(ack_message.clone()),
+                    sender_addr,
+                };
+
+                let connections = self.connections.read().await;
+                if let Some(connection) = connections.get(original_sender) {
+                    match connection.send_channel.send(routable.clone()).await {
+                        Ok(_) => {
+                            debug!("✅ Ack routed to original sender: {}", original_sender);
+                            Ok(AckStatus::Delivered)
+                        },
+                        Err(e) => {
+                            error!("Failed to send ack to original sender: {}", e);
+                            Ok(AckStatus::Failed)
+                        }
+                    }
+                } else {
+                    warn!("Original sender offline, cannot route ack: {}", original_sender);
+                    Ok(AckStatus::Failed)
+                }
+            },
+            RelayMessage::ReadReceipt(read_receipt) => {
+                // Read receipts are routed back to the sender of the original message
+                let original_sender = read_receipt.message_id.split('-').next().unwrap_or(""); // Assuming message ID contains sender
+                let routable = RoutableMessage {
+                    message: RelayMessage::ReadReceipt(read_receipt.clone()),
+                    sender_addr,
+                };
+
+                let connections = self.connections.read().await;
+                if let Some(connection) = connections.get(original_sender) {
+                    match connection.send_channel.send(routable.clone()).await {
+                        Ok(_) => {
+                            debug!("👀 Read receipt routed to original sender: {}", original_sender);
+                            Ok(AckStatus::Delivered)
+                        },
+                        Err(e) => {
+                            error!("Failed to send read receipt to original sender: {}", e);
+                            Ok(AckStatus::Failed)
+                        }
+                    }
+                } else {
+                    warn!("Original sender offline, cannot route read receipt: {}", original_sender);
+                    Ok(AckStatus::Failed)
+                }
+            },
+            RelayMessage::Ping(ping_message) => {
+                info!("Received ping from {:?}", sender_addr);
+                // Pings are not routed, just acknowledged implicitly by connection staying alive
+                Ok(AckStatus::Delivered)
+            },
+            RelayMessage::Pong(pong_message) => {
+                info!("Received pong from {:?}", sender_addr);
+                // Pongs are not routed
+                Ok(AckStatus::Delivered)
+            },
         }
     }
     
@@ -280,11 +349,11 @@ mod tests {
         let sender_addr = "127.0.0.1:1234".parse().unwrap();
         
         // Route message to offline recipient
-        let status = router.route_message(message, sender_addr).await.unwrap();
+        let status = router.route_message(RelayMessage::Chat(message), sender_addr).await.unwrap();
         assert_eq!(status, AckStatus::Delivered);
         
         let stats = router.get_stats().await;
         assert_eq!(stats.queued_messages, 1);
         assert_eq!(stats.recipients_with_queued, 1);
     }
-} 
+}  
