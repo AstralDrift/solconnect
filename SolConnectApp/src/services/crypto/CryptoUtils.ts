@@ -5,27 +5,88 @@
 
 import { createResult, Result, SolConnectError, ErrorCode } from '../../types/errors';
 
+// Noble crypto fallbacks for Node.js/Jest environments
+let nobleEd25519: any;
+let nobleCurves: any;
+
+// Lazy load noble libraries only when needed
+async function getNobleEd25519() {
+  if (!nobleEd25519) {
+    nobleEd25519 = await import('@noble/ed25519');
+  }
+  return nobleEd25519;
+}
+
+async function getNobleCurves() {
+  if (!nobleCurves) {
+    nobleCurves = await import('@noble/curves/ed25519');
+  }
+  return nobleCurves;
+}
+
+// Check if WebCrypto supports specific algorithms
+function supportsWebCrypto(algorithm: string): boolean {
+  try {
+    if (!globalThis.crypto?.subtle) return false;
+    
+    // Check if the algorithm is supported
+    if (algorithm === 'Ed25519') {
+      // Ed25519 is not widely supported in Node.js WebCrypto yet
+      return typeof globalThis.crypto.subtle.generateKey === 'function' && 
+             globalThis.navigator?.userAgent !== undefined; // Browser check
+    }
+    
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class CryptoUtils {
   /**
    * Generate Ed25519 key pair for identity keys
    */
   static async generateEd25519KeyPair(): Promise<CryptoKeyPair> {
-    return crypto.subtle.generateKey(
-      {
-        name: 'Ed25519',
-        namedCurve: 'Ed25519',
-      },
-      true,
-      ['sign', 'verify']
-    );
+    if (supportsWebCrypto('Ed25519')) {
+      return crypto.subtle.generateKey(
+        {
+          name: 'Ed25519',
+          namedCurve: 'Ed25519',
+        },
+        true,
+        ['sign', 'verify']
+      );
+    } else {
+      // Use noble fallback
+      const noble = await getNobleEd25519();
+      const privateKey = noble.utils.randomPrivateKey();
+      const publicKey = await noble.getPublicKey(privateKey);
+      
+      // Create mock CryptoKeyPair
+      return {
+        privateKey: {
+          type: 'private',
+          extractable: true,
+          algorithm: { name: 'Ed25519' },
+          usages: ['sign'],
+          _noblePrivateKey: privateKey
+        } as any,
+        publicKey: {
+          type: 'public', 
+          extractable: true,
+          algorithm: { name: 'Ed25519' },
+          usages: ['verify'],
+          _noblePublicKey: publicKey
+        } as any
+      };
+    }
   }
 
   /**
    * Generate X25519 key pair for ECDH
    */
   static async generateX25519KeyPair(): Promise<CryptoKeyPair> {
-    // WebCrypto doesn't directly support X25519, so we use ECDH with P-256
-    // In production, use a proper crypto library like libsodium-wrappers
+    // For now, use P-256 ECDH which is widely supported
     return crypto.subtle.generateKey(
       {
         name: 'ECDH',
@@ -216,6 +277,13 @@ export class CryptoUtils {
     privateKey: CryptoKey
   ): Promise<Result<Uint8Array>> {
     try {
+      // Check if using noble fallback
+      if ((privateKey as any)._noblePrivateKey) {
+        const noble = await getNobleEd25519();
+        const signature = await noble.sign(data, (privateKey as any)._noblePrivateKey);
+        return createResult.success(signature);
+      }
+      
       const signature = await crypto.subtle.sign(
         'Ed25519',
         privateKey,
@@ -240,32 +308,39 @@ export class CryptoUtils {
     publicKey: Uint8Array
   ): Promise<Result<boolean>> {
     try {
-      // Import public key
-      const cryptoKey = await crypto.subtle.importKey(
-        'raw',
-        publicKey,
-        {
-          name: 'Ed25519',
-          namedCurve: 'Ed25519',
-        },
-        false,
-        ['verify']
-      );
-
-      const isValid = await crypto.subtle.verify(
-        'Ed25519',
-        cryptoKey,
-        signature,
-        data
-      );
-
+      // Try noble first (always works)
+      const noble = await getNobleEd25519();
+      const isValid = await noble.verify(signature, data, publicKey);
       return createResult.success(isValid);
     } catch (error) {
-      return createResult.error(SolConnectError.system(
-        ErrorCode.CRYPTO_ERROR,
-        `Signature verification failed: ${error}`,
-        'Failed to verify signature'
-      ));
+      // Fallback to WebCrypto if available
+      try {
+        const cryptoKey = await crypto.subtle.importKey(
+          'raw',
+          publicKey,
+          {
+            name: 'Ed25519',
+            namedCurve: 'Ed25519',
+          },
+          false,
+          ['verify']
+        );
+
+        const isValid = await crypto.subtle.verify(
+          'Ed25519',
+          cryptoKey,
+          signature,
+          data
+        );
+
+        return createResult.success(isValid);
+      } catch (webCryptoError) {
+        return createResult.error(SolConnectError.system(
+          ErrorCode.CRYPTO_ERROR,
+          `Signature verification failed: ${error}`,
+          'Failed to verify signature'
+        ));
+      }
     }
   }
 
@@ -296,6 +371,14 @@ export class CryptoUtils {
    * Convert key to raw bytes
    */
   static async exportKey(key: CryptoKey): Promise<Uint8Array> {
+    // Check if using noble fallback
+    if ((key as any)._noblePublicKey) {
+      return (key as any)._noblePublicKey;
+    }
+    if ((key as any)._noblePrivateKey) {
+      return (key as any)._noblePrivateKey;
+    }
+    
     const exported = await crypto.subtle.exportKey('raw', key);
     return new Uint8Array(exported);
   }
@@ -308,6 +391,27 @@ export class CryptoUtils {
     algorithm: string,
     keyUsages: KeyUsage[]
   ): Promise<CryptoKey> {
+    if (algorithm === 'Ed25519' && !supportsWebCrypto('Ed25519')) {
+      // Use noble fallback for Ed25519
+      if (keyUsages.includes('verify')) {
+        return {
+          type: 'public',
+          extractable: true,
+          algorithm: { name: 'Ed25519' },
+          usages: ['verify'],
+          _noblePublicKey: keyData
+        } as any;
+      } else {
+        return {
+          type: 'private',
+          extractable: true,
+          algorithm: { name: 'Ed25519' },
+          usages: ['sign'],
+          _noblePrivateKey: keyData
+        } as any;
+      }
+    }
+    
     if (algorithm === 'X25519' || algorithm === 'ECDH') {
       return crypto.subtle.importKey(
         'raw',

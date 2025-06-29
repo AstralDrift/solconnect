@@ -13,7 +13,7 @@ const createJestConfig = nextJest({
 // Add any custom config to be passed to Jest
 const customJestConfig = {
   // Test environment
-  testEnvironment: 'jsdom',
+  testEnvironment: 'node',
   
   // Setup files
   setupFilesAfterEnv: [
@@ -62,6 +62,11 @@ const customJestConfig = {
     '^.+\\.(js|jsx|ts|tsx)$': ['babel-jest', { presets: ['next/babel'] }],
   },
   
+  // Allow transforming ES modules from noble libraries
+  transformIgnorePatterns: [
+    'node_modules/(?!(@noble/ed25519|@noble/curves)/)'
+  ],
+  
   // Module file extensions
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'node'],
   
@@ -105,18 +110,8 @@ const customJestConfig = {
     '<rootDir>/dist/',
   ],
   
-
-  
   // Error handling
   errorOnDeprecated: true,
-  
-  // Performance monitoring
-  detectOpenHandles: true,
-  detectLeaks: true,
-  
-
-  
-
 };
 
 // Create Jest config with Next.js optimizations

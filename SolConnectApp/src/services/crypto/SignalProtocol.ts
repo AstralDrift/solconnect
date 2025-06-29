@@ -81,6 +81,9 @@ export class SignalProtocol {
   private keyStorage: KeyStorage;
   private config: SignalProtocolConfig;
   private sessions = new Map<string, SessionState>();
+  private readonly INFO_ROOT = new TextEncoder().encode('SolConnect_Root');
+  private readonly INFO_CHAIN = new TextEncoder().encode('SolConnect_Chain');
+  private readonly INFO_MSG = new TextEncoder().encode('SolConnect_Message');
   
   constructor(keyStorage: KeyStorage, config?: Partial<SignalProtocolConfig>) {
     this.keyStorage = keyStorage;
@@ -538,7 +541,7 @@ export class SignalProtocol {
   }
 
   /**
-   * Ratchet root key using KDF
+   * Ratchet the root key and derive a new sending/receiving chain key.
    */
   private async ratchetRootKey(
     rootKey: Uint8Array,
@@ -546,127 +549,142 @@ export class SignalProtocol {
     theirRatchetKey: Uint8Array
   ): Promise<Result<{ rootKey: Uint8Array; chainKey: Uint8Array }>> {
     try {
-      const dhOutput = await CryptoUtils.performECDH(ourRatchetKey.privateKey, theirRatchetKey);
-      
-      const kdfOutput = await CryptoUtils.deriveKey(
-        dhOutput,
-        rootKey,
-        new TextEncoder().encode('Signal_Ratchet_KDF'),
-        64 // 32 bytes for root key + 32 bytes for chain key
+      // Perform DH between our private and their public
+      const dh = await CryptoUtils.performECDH(
+        ourRatchetKey.privateKey,
+        theirRatchetKey
       );
 
-      return createResult.success({
-        rootKey: kdfOutput.slice(0, 32),
-        chainKey: kdfOutput.slice(32, 64),
-      });
+      // Derive 64-byte output: first 32 = new root, last 32 = chain
+      const derived = await CryptoUtils.deriveKey(
+        dh,
+        rootKey, // use previous root as salt to mix forward secrecy
+        this.INFO_ROOT,
+        64
+      );
+
+      const newRoot = derived.slice(0, 32);
+      const chainKey = derived.slice(32);
+      return createResult.success({ rootKey: newRoot, chainKey });
     } catch (error) {
-      return createResult.error(SolConnectError.system(
-        ErrorCode.CRYPTO_ERROR,
-        `Root key ratchet failed: ${error}`,
-        'Key derivation failed'
-      ));
+      return createResult.error(
+        SolConnectError.system(
+          ErrorCode.CRYPTO_ERROR,
+          `Root ratchet failed: ${error}`,
+          'Encryption key ratchet failed'
+        )
+      );
     }
   }
 
   /**
-   * Skip messages and store their keys
+   * Derive a message key from chain key.
+   */
+  private async deriveMessageKey(chainKey: Uint8Array): Promise<Result<Uint8Array>> {
+    try {
+      const mk = await CryptoUtils.deriveKey(
+        chainKey,
+        new Uint8Array(0),
+        this.INFO_MSG,
+        32
+      );
+      return createResult.success(mk);
+    } catch (error) {
+      return createResult.error(
+        SolConnectError.system(
+          ErrorCode.CRYPTO_ERROR,
+          `Derive message key failed: ${error}`,
+          'Encryption failed'
+        )
+      );
+    }
+  }
+
+  /**
+   * Derive next chain key from current chain key.
+   */
+  private async deriveNextChainKey(chainKey: Uint8Array): Promise<Uint8Array> {
+    // Using HKDF with different info string
+    return await CryptoUtils.deriveKey(
+      chainKey,
+      new Uint8Array(0),
+      this.INFO_CHAIN,
+      32
+    );
+  }
+
+  /**
+   * Handle skipped messages keys up to maxSkippedMessages.
    */
   private async skipMessages(
     session: SessionState,
     count: number
   ): Promise<Result<void>> {
-    if (count > this.config.maxSkippedMessages) {
-      return createResult.error(SolConnectError.security(
-        ErrorCode.CRYPTO_ERROR,
-        `Too many messages to skip: ${count}`,
-        'Too many messages missed'
-      ));
-    }
+    try {
+      for (let i = 0; i < count; i++) {
+        const msgKeyRes = await this.deriveMessageKey(session.receivingChainKey);
+        if (!msgKeyRes.success) return createResult.error(msgKeyRes.error!);
+        const msgKey = msgKeyRes.data!;
 
-    for (let i = 0; i < count; i++) {
-      const messageKeyResult = await this.deriveMessageKey(session.receivingChainKey);
-      if (!messageKeyResult.success || !messageKeyResult.data) {
-        return createResult.error(messageKeyResult.error!);
+        const keyId = this.getSkippedKeyId(session.receivingRatchetKey!, session.messageNumber + i);
+        session.skippedMessageKeys.set(keyId, {
+          messageKey: msgKey,
+          counter: session.messageNumber + i,
+          timestamp: Date.now(),
+        });
+
+        // Advance chain key
+        session.receivingChainKey = await this.deriveNextChainKey(session.receivingChainKey);
+
+        // Enforce limit
+        if (session.skippedMessageKeys.size > this.config.maxSkippedMessages) {
+          const oldest = [...session.skippedMessageKeys.keys()][0];
+          session.skippedMessageKeys.delete(oldest);
+        }
       }
-
-      const key = `${session.receivingRatchetKey}-${session.messageNumber + i}`;
-      session.skippedMessageKeys.set(key, {
-        messageKey: messageKeyResult.data,
-        counter: session.messageNumber + i,
-        timestamp: Date.now(),
-      });
-
-      session.receivingChainKey = await this.deriveNextChainKey(session.receivingChainKey);
+      return createResult.success(undefined);
+    } catch (error) {
+      return createResult.error(
+        SolConnectError.system(
+          ErrorCode.CRYPTO_ERROR,
+          `Skip messages failed: ${error}`,
+          'Failed to handle skipped messages'
+        )
+      );
     }
-
-    // Clean up old skipped keys
-    this.cleanupSkippedKeys(session);
-
-    return createResult.success(undefined);
   }
 
   /**
-   * Try to decrypt with skipped message keys
+   * Try previously-derived skipped keys for out-of-order message.
    */
   private async trySkippedMessageKeys(
     session: SessionState,
     encryptedMessage: EncryptedMessage
   ): Promise<Result<Uint8Array | null>> {
-    const key = `${encryptedMessage.header.dhPublicKey}-${encryptedMessage.header.messageNumber}`;
-    const skippedKey = session.skippedMessageKeys.get(key);
-    
-    if (!skippedKey) {
-      return createResult.success(null);
-    }
+    const keyId = this.getSkippedKeyId(
+      encryptedMessage.header.dhPublicKey,
+      encryptedMessage.header.messageNumber
+    );
+    const entry = session.skippedMessageKeys.get(keyId);
+    if (!entry) return createResult.success(null);
 
-    // Try to decrypt
-    const decryptResult = await CryptoUtils.decryptAESGCM(
+    // Attempt decryption
+    const ad = this.createAssociatedData(encryptedMessage.header);
+    const decRes = await CryptoUtils.decryptAESGCM(
       encryptedMessage.ciphertext,
-      skippedKey.messageKey,
+      entry.messageKey,
       encryptedMessage.mac,
-      this.createAssociatedData(encryptedMessage.header)
+      ad
     );
 
-    if (decryptResult.success) {
-      // Remove used key
-      session.skippedMessageKeys.delete(key);
-      await this.keyStorage.storeSession(session.sessionId, session);
-    }
+    // Regardless of success, remove key
+    session.skippedMessageKeys.delete(keyId);
 
-    return decryptResult;
+    return decRes.success ? decRes : createResult.success(null);
   }
 
-  /**
-   * Derive message key from chain key
-   */
-  private async deriveMessageKey(chainKey: Uint8Array): Promise<Result<Uint8Array>> {
-    try {
-      const messageKey = await CryptoUtils.deriveKey(
-        new TextEncoder().encode('MessageKey'),
-        chainKey,
-        new Uint8Array(0),
-        32
-      );
-      return createResult.success(messageKey);
-    } catch (error) {
-      return createResult.error(SolConnectError.system(
-        ErrorCode.CRYPTO_ERROR,
-        `Message key derivation failed: ${error}`,
-        'Key derivation failed'
-      ));
-    }
-  }
-
-  /**
-   * Derive next chain key
-   */
-  private async deriveNextChainKey(chainKey: Uint8Array): Promise<Uint8Array> {
-    return CryptoUtils.deriveKey(
-      new TextEncoder().encode('ChainKey'),
-      chainKey,
-      new Uint8Array(0),
-      32
-    );
+  private getSkippedKeyId(dhPub: Uint8Array, counter: number): string {
+    return `${Buffer.from(dhPub).toString('hex')}_${counter}`;
   }
 
   /**
