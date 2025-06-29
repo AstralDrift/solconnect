@@ -453,6 +453,7 @@ lsof -i :8080  # Relay server
 2. **Commit Messages**
    - Use conventional commits
    - Format: `type(scope): description`
+   - Do NOT include Claude Code attribution or co-authored-by tags
    - Examples:
      - `feat(chat): add message reactions`
      - `fix(relay): handle reconnection`
