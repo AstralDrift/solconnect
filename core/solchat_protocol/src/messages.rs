@@ -7,7 +7,7 @@ pub mod proto {
 use crate::WalletAddress;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub use proto::{ChatMessage, AckMessage, AckStatus, HandshakeRequest, HandshakeResponse, ReadReceipt};
+pub use proto::{ChatMessage, AckMessage, AckStatus, HandshakeRequest, HandshakeResponse, ReadReceipt, PingMessage, PongMessage};
 
 /// Conversion helpers for protobuf types
 impl ChatMessage {
