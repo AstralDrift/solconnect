@@ -14,6 +14,7 @@ import { WebSocketSyncTransport } from './sync/WebSocketSyncTransport';
 import { DatabaseService } from './database/DatabaseService';
 import { EncryptionService, initializeEncryptionService, getEncryptionService } from './crypto/EncryptionService';
 import { SyncMessageFactory } from './sync/SyncProtocol';
+import { getReactionService, ReactionSummary } from './ReactionService';
 
 export interface MessageBusConfig {
   relayEndpoint: string;
@@ -41,6 +42,19 @@ export interface MessageBusState {
 export interface MessageInterceptor {
   beforeSend?: (session: ChatSession, message: string) => Promise<Result<string>>;
   afterReceive?: (message: Message) => Promise<Result<Message>>;
+}
+
+export interface ReactionEvent {
+  type: 'reaction_added' | 'reaction_removed';
+  messageId: string;
+  sessionId: string;
+  emoji: string;
+  userAddress: string;
+  timestamp: string;
+}
+
+export interface ReactionEventHandler {
+  (event: ReactionEvent): void;
 }
 
 /**
@@ -73,6 +87,10 @@ export class MessageBus {
   // Status tracking
   private statusUpdateCallback?: (update: MessageStatusUpdate) => void;
   private messageStatusEventHandlers = new Map<string, (update: MessageStatusUpdate) => void>();
+  
+  // Reaction tracking
+  private reactionEventHandlers = new Map<string, ReactionEventHandler>();
+  private reactionService = getReactionService();
 
   constructor(config: MessageBusConfig) {
     this.config = {
@@ -891,6 +909,272 @@ export class MessageBus {
     });
   }
 
+  // ===================================================================
+  // REACTION METHODS
+  // ===================================================================
+
+  /**
+   * Add a reaction to a message
+   */
+  async addReaction(
+    messageId: string,
+    sessionId: string,
+    userAddress: string,
+    emoji: string
+  ): Promise<Result<{ action: 'added' | 'removed'; reaction?: any }>> {
+    try {
+      this.logger.info('Adding reaction to message', { messageId, sessionId, userAddress, emoji });
+
+      // Use ReactionService to add the reaction
+      const reactionResult = await this.reactionService.toggleReaction(messageId, userAddress, emoji);
+      
+      if (!reactionResult.success) {
+        return createResult.error(reactionResult.error!);
+      }
+
+      const result = reactionResult.data!;
+
+      // Create reaction event
+      const reactionEvent: ReactionEvent = {
+        type: result.action === 'added' ? 'reaction_added' : 'reaction_removed',
+        messageId,
+        sessionId,
+        emoji,
+        userAddress,
+        timestamp: new Date().toISOString()
+      };
+
+      // Broadcast reaction event to other devices
+      await this.broadcastReactionEvent(reactionEvent);
+
+      // Notify local reaction event handlers
+      this.notifyReactionEventHandlers(reactionEvent);
+
+      this.logger.info('Reaction processed successfully', { 
+        messageId, 
+        action: result.action, 
+        emoji 
+      });
+
+      return createResult.success(result);
+    } catch (error) {
+      this.logger.error('Failed to add reaction', error);
+      return createResult.error(
+        new SolConnectError(
+          'system' as any,
+          ErrorCode.UNKNOWN_ERROR,
+          `Failed to add reaction: ${error}`,
+          'Unable to add reaction. Please try again.',
+          true,
+          { messageId, sessionId, userAddress, emoji, originalError: error.message }
+        )
+      );
+    }
+  }
+
+  /**
+   * Remove a reaction from a message
+   */
+  async removeReaction(
+    messageId: string,
+    sessionId: string,
+    userAddress: string,
+    emoji: string
+  ): Promise<Result<void>> {
+    try {
+      this.logger.info('Removing reaction from message', { messageId, sessionId, userAddress, emoji });
+
+      // Use ReactionService to remove the reaction
+      const reactionResult = await this.reactionService.removeReaction(messageId, userAddress, emoji);
+      
+      if (!reactionResult.success) {
+        return createResult.error(reactionResult.error!);
+      }
+
+      // Create reaction event
+      const reactionEvent: ReactionEvent = {
+        type: 'reaction_removed',
+        messageId,
+        sessionId,
+        emoji,
+        userAddress,
+        timestamp: new Date().toISOString()
+      };
+
+      // Broadcast reaction event to other devices
+      await this.broadcastReactionEvent(reactionEvent);
+
+      // Notify local reaction event handlers
+      this.notifyReactionEventHandlers(reactionEvent);
+
+      this.logger.info('Reaction removed successfully', { messageId, emoji });
+      return createResult.success(undefined);
+    } catch (error) {
+      this.logger.error('Failed to remove reaction', error);
+      return createResult.error(
+        new SolConnectError(
+          'system' as any,
+          ErrorCode.UNKNOWN_ERROR,
+          `Failed to remove reaction: ${error}`,
+          'Unable to remove reaction. Please try again.',
+          true,
+          { messageId, sessionId, userAddress, emoji, originalError: error.message }
+        )
+      );
+    }
+  }
+
+  /**
+   * Get all reactions for a message
+   */
+  async getMessageReactions(
+    messageId: string,
+    currentUserAddress?: string
+  ): Promise<Result<ReactionSummary[]>> {
+    try {
+      this.logger.debug('Getting reactions for message', { messageId });
+
+      const reactionResult = await this.reactionService.getMessageReactions(messageId, currentUserAddress);
+      
+      if (!reactionResult.success) {
+        return createResult.error(reactionResult.error!);
+      }
+
+      this.logger.debug('Retrieved reactions for message', { 
+        messageId, 
+        reactionCount: reactionResult.data!.length 
+      });
+
+      return createResult.success(reactionResult.data!);
+    } catch (error) {
+      this.logger.error('Failed to get message reactions', error);
+      return createResult.error(
+        new SolConnectError(
+          'system' as any,
+          ErrorCode.STORAGE_ERROR,
+          `Failed to get message reactions: ${error}`,
+          'Unable to load reactions. Please try again.',
+          true,
+          { messageId, originalError: error.message }
+        )
+      );
+    }
+  }
+
+  /**
+   * Get user's recent emojis for quick picker
+   */
+  async getUserRecentEmojis(
+    userAddress: string,
+    limit: number = 8
+  ): Promise<Result<Array<{ emoji: string; usageCount: number; lastUsedAt: Date }>>> {
+    try {
+      this.logger.debug('Getting user recent emojis', { userAddress, limit });
+
+      const recentResult = await this.reactionService.getUserRecentEmojis(userAddress, limit);
+      
+      if (!recentResult.success) {
+        return createResult.error(recentResult.error!);
+      }
+
+      this.logger.debug('Retrieved user recent emojis', { 
+        userAddress, 
+        emojiCount: recentResult.data!.length 
+      });
+
+      return createResult.success(recentResult.data!);
+    } catch (error) {
+      this.logger.error('Failed to get user recent emojis', error);
+      return createResult.error(
+        new SolConnectError(
+          'system' as any,
+          ErrorCode.STORAGE_ERROR,
+          `Failed to get recent emojis: ${error}`,
+          'Unable to load recent emojis. Please try again.',
+          true,
+          { userAddress, originalError: error.message }
+        )
+      );
+    }
+  }
+
+  /**
+   * Broadcast reaction event to other devices/users
+   */
+  private async broadcastReactionEvent(event: ReactionEvent): Promise<void> {
+    try {
+      this.logger.debug('Broadcasting reaction event', event);
+
+      // Send via WebSocket relay if connected
+      if (this.transport instanceof WebSocketTransport && this.transport.isConnected) {
+        // Create relay message for reaction event
+        const relayMessage = {
+          type: 'reaction_event',
+          reactionEvent: event,
+          roomId: event.sessionId
+        };
+
+        try {
+          await this.transport.sendRawMessage(relayMessage);
+          this.logger.debug('Reaction event sent via WebSocket relay', relayMessage);
+        } catch (relayError) {
+          this.logger.warn('Failed to send reaction event via relay, falling back to sync protocol', relayError);
+          
+          // Fallback to sync protocol if available
+          if (this.syncManager) {
+            const syncMessage = {
+              type: 'reaction_sync',
+              deviceId: this.deviceId,
+              sessionId: event.sessionId,
+              reactionEvent: event,
+              timestamp: Date.now()
+            };
+            
+            const sendResult = await this.transport.sendSyncMessage(syncMessage);
+            if (!sendResult.success) {
+              this.logger.error('Failed to broadcast reaction event via sync protocol', sendResult.error);
+            }
+          }
+        }
+      } else {
+        this.logger.debug('Transport not connected, reaction event will be synced later', event);
+      }
+    } catch (error) {
+      this.logger.error('Failed to broadcast reaction event', error);
+    }
+  }
+
+  /**
+   * Subscribe to reaction events
+   */
+  onReactionEvent(handler: ReactionEventHandler): string {
+    const id = `reaction_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    this.reactionEventHandlers.set(id, handler);
+    this.logger.debug('Registered reaction event handler', { id });
+    return id;
+  }
+
+  /**
+   * Unsubscribe from reaction events
+   */
+  offReactionEvent(handlerId: string): void {
+    this.reactionEventHandlers.delete(handlerId);
+    this.logger.debug('Unregistered reaction event handler', { handlerId });
+  }
+
+  /**
+   * Notify all reaction event handlers
+   */
+  private notifyReactionEventHandlers(event: ReactionEvent): void {
+    this.reactionEventHandlers.forEach((handler, id) => {
+      try {
+        handler(event);
+      } catch (error) {
+        this.logger.error('Error in reaction event handler', error, { handlerId: id });
+      }
+    });
+  }
+
   /**
    * Get stored messages for a session
    */
@@ -1147,6 +1431,10 @@ export class MessageBus {
           await this.handleIncomingTypingIndicator(message);
           break;
           
+        case 'reaction_event':
+          await this.handleIncomingReactionEvent(message);
+          break;
+          
         default:
           this.logger.debug('Unknown relay message type', { type: message.type });
       }
@@ -1268,6 +1556,24 @@ export class MessageBus {
       
     } catch (error) {
       this.logger.error('Error handling typing indicator', error);
+    }
+  }
+
+  private async handleIncomingReactionEvent(message: any): Promise<void> {
+    try {
+      const reactionEvent = message.reactionEvent as ReactionEvent;
+      
+      this.logger.info('Received reaction event', reactionEvent);
+
+      // Update local database/storage if needed
+      // The reaction is already handled by the original sender, but we might want to
+      // store/cache reaction data locally for offline scenarios
+
+      // Notify reaction event handlers
+      this.notifyReactionEventHandlers(reactionEvent);
+      
+    } catch (error) {
+      this.logger.error('Error handling incoming reaction event', error);
     }
   }
 

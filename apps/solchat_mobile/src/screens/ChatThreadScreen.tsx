@@ -10,8 +10,9 @@ import {
 import { ThemedHeader } from '../../../mobile/components/ThemedHeader';
 import { ThemedTextInput } from '../../../mobile/components/ThemedTextInput';
 import { ThemedButton } from '../../../mobile/components/ThemedButton';
-import type { Session, EncryptedMessage } from '../native/SolChatSDK';
 import SolChatSDK from '../native/SolChatSDK';
+import { MessageFactory, protocolCodec } from '../../SolConnectApp/src/services/protocol/ProtocolBuffers';
+import type { Session, EncryptedMessage } from '../native/SolChatSDK';
 
 interface ChatThreadScreenProps {
   session: Session;

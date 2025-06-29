@@ -26,6 +26,7 @@ export interface Subscription {
 
 export type MessageHandler = (message: Message) => void;
 export type SyncMessageHandler = (message: AnySyncMessage) => void;
+export type RelayMessageHandler = (message: any) => void;
 
 /**
  * Abstract message transport interface
@@ -33,11 +34,13 @@ export type SyncMessageHandler = (message: AnySyncMessage) => void;
 export abstract class MessageTransport {
   protected handlers = new Map<string, MessageHandler>();
   protected syncHandlers = new Set<SyncMessageHandler>();
+  protected relayHandlers = new Set<RelayMessageHandler>();
   protected connection: Connection | null = null;
 
   abstract connect(endpoint: string): Promise<Result<Connection>>;
   abstract send(session: ChatSession, message: string): Promise<Result<DeliveryReceipt>>;
   abstract sendSyncMessage(message: AnySyncMessage): Promise<Result<void>>;
+  abstract sendRawMessage(message: any): Promise<Result<void>>;
   abstract disconnect(): Promise<Result<void>>;
 
   /**
@@ -67,6 +70,20 @@ export abstract class MessageTransport {
    */
   offSyncMessage(handler: SyncMessageHandler): void {
     this.syncHandlers.delete(handler);
+  }
+
+  /**
+   * Subscribe to relay messages (for real-time events like reactions, typing indicators)
+   */
+  onRelayMessage(handler: RelayMessageHandler): void {
+    this.relayHandlers.add(handler);
+  }
+
+  /**
+   * Unsubscribe from relay messages
+   */
+  offRelayMessage(handler: RelayMessageHandler): void {
+    this.relayHandlers.delete(handler);
   }
 
   /**
@@ -103,6 +120,17 @@ export abstract class MessageTransport {
         handler(message);
       } catch (error) {
         console.error('Error in sync message handler:', error);
+      }
+    }
+  }
+
+  protected handleIncomingRelayMessage(message: any): void {
+    // Notify all relay handlers
+    for (const handler of this.relayHandlers) {
+      try {
+        handler(message);
+      } catch (error) {
+        console.error('Error in relay message handler:', error);
       }
     }
   }
@@ -168,6 +196,12 @@ export class WebSocketTransport extends MessageTransport {
             // Check if this is a sync message
             if (data.type && Object.values(SyncMessageType).includes(data.type)) {
               this.handleIncomingSyncMessage(data as AnySyncMessage);
+              return;
+            }
+
+            // Check if this is a relay message (reactions, typing indicators, etc.)
+            if (data.type && ['reaction_event', 'status_update', 'delivery_receipt', 'read_receipt', 'typing_indicator'].includes(data.type)) {
+              this.handleIncomingRelayMessage(data);
               return;
             }
             
@@ -296,6 +330,28 @@ export class WebSocketTransport extends MessageTransport {
     }
   }
 
+  async sendRawMessage(message: any): Promise<Result<void>> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return createResult.error(SolConnectError.network(
+        ErrorCode.RELAY_DISCONNECTED,
+        'WebSocket not connected',
+        'Not connected to relay server'
+      ));
+    }
+
+    try {
+      this.ws.send(JSON.stringify(message));
+      return createResult.success(undefined);
+    } catch (error) {
+      return createResult.error(SolConnectError.network(
+        ErrorCode.CONNECTION_FAILED,
+        `Failed to send raw message: ${error}`,
+        'Failed to send message',
+        { error: error?.toString() }
+      ));
+    }
+  }
+
   async disconnect(): Promise<Result<void>> {
     try {
       if (this.ws) {
@@ -306,6 +362,7 @@ export class WebSocketTransport extends MessageTransport {
       this.connection = null;
       this.handlers.clear();
       this.syncHandlers.clear();
+      this.relayHandlers.clear();
       
       return createResult.success(undefined);
     } catch (error) {
@@ -415,6 +472,14 @@ export class QuicTransport extends MessageTransport {
   }
 
   async sendSyncMessage(message: AnySyncMessage): Promise<Result<void>> {
+    return createResult.error(SolConnectError.network(
+      ErrorCode.CONNECTION_FAILED,
+      'QUIC transport not yet implemented',
+      'QUIC transport is not available yet. Please use WebSocket transport for now.'
+    ));
+  }
+
+  async sendRawMessage(message: any): Promise<Result<void>> {
     return createResult.error(SolConnectError.network(
       ErrorCode.CONNECTION_FAILED,
       'QUIC transport not yet implemented',

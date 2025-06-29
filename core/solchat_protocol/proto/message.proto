@@ -76,3 +76,18 @@ message HandshakeResponse {
   // Server timestamp
   uint64 timestamp = 3;
 } 
+
+// Read receipt message for indicating a message has been read
+message ReadReceipt {
+  // Unique read receipt identifier
+  string id = 1;
+  
+  // Reference to the message that was read
+  string message_id = 2;
+  
+  // Wallet address of the user who read the message
+  string reader_wallet = 3;
+  
+  // Unix timestamp when the message was read
+  uint64 timestamp = 4;
+} 
