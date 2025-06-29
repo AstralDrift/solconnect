@@ -2,13 +2,23 @@
 
 A secure, decentralized messaging application built on Solana blockchain with end-to-end encryption.
 
+> 🤖 **AI-Powered Development**: SolConnect features a revolutionary **Universal AI Agent Heaven** framework with self-improving documentation, intelligent code assistance, and cross-LLM compatibility. [**Get Started with AI Agents →**](docs/AI_AGENT_GUIDE.md)
+
 ## Features
 
+### 💬 **Core Messaging**
 - 🔐 **End-to-End Encryption**: Messages are encrypted using state-of-the-art cryptography
 - 🌐 **Web & Mobile**: Cross-platform support with React Native and Next.js
 - ⚡ **Real-time Messaging**: WebSocket-based relay for instant message delivery
 - 🎯 **Solana Integration**: Built on Solana blockchain for decentralized identity
 - 🎨 **Modern UI**: Beautiful, responsive design with glass morphism effects
+
+### 🤖 **AI Agent Heaven Framework**
+- 🌍 **Universal AI Support**: Works with Claude, GPT-4, Gemini Pro, and local models
+- 🧬 **Self-Improving Systems**: Documentation and patterns that evolve with the codebase
+- 🎯 **Agent Specialization**: Specialized agents for crypto, UI, storage, and network development
+- 📚 **Living Documentation**: Architecture diagrams and guides that stay current automatically
+- 🔄 **Cross-Agent Learning**: Knowledge sharing between different AI platforms
 
 ## Architecture
 
@@ -69,6 +79,28 @@ SolConnect/
    - Relay server: ws://localhost:8080
    - Solana RPC: http://127.0.0.1:8899
 
+### 🤖 AI Agent Quick Start
+
+**New to AI-assisted development?** SolConnect's AI Agent Heaven framework can dramatically accelerate your development:
+
+```bash
+# Setup AI agent system (choose your platform)
+./ai-agent-heaven-universal/setup.sh --platform claude    # For Claude/Cursor
+./ai-agent-heaven-universal/setup.sh --platform gpt4     # For GPT-4/ChatGPT
+./ai-agent-heaven-universal/setup.sh --platform gemini   # For Gemini Pro
+./ai-agent-heaven-universal/setup.sh --platform local    # For local models
+
+# Get intelligent assistance
+./ai-agent-heaven-universal/agent --feature "Add message reactions"
+./ai-agent-heaven-universal/agent --debug "WebSocket connection issues"
+./ai-agent-heaven-universal/agent --analyze "src/services/crypto/"
+```
+
+**📚 AI Agent Documentation:**
+- [**AI Agent Guide**](docs/AI_AGENT_GUIDE.md) - Start here for AI-powered development
+- [**Setup Instructions**](docs/AI_AGENT_SETUP.md) - Platform-specific configuration
+- [**Self-Improving Systems**](docs/SELF_IMPROVING_SYSTEMS.md) - How the living documentation works
+
 ## Development
 
 ### Project Structure
@@ -120,11 +152,30 @@ SolConnect implements several security measures:
 
 ## Contributing
 
+### 🤖 AI-Powered Contributing
+
+**Recommended**: Use SolConnect's AI Agent system for faster, higher-quality contributions:
+
+1. **Setup AI Agent**: Follow the [AI Agent Setup Guide](docs/AI_AGENT_SETUP.md)
+2. **Choose Specialization**: Pick crypto, UI, storage, or network focus
+3. **AI-Assisted Development**: Use intelligent code assistance and pattern recognition
+4. **Leverage Self-Improving Systems**: Benefit from evolved patterns and living documentation
+
+### 📋 Standard Contributing Process
+
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+3. **Leverage AI agents** for development and testing
+4. Commit your changes (`git commit -m 'Add some amazing feature'`)
+5. Push to the branch (`git push origin feature/amazing-feature`)
+6. Open a Pull Request
+
+### 📚 Development Resources
+
+- [**AI Agent Guide**](docs/AI_AGENT_GUIDE.md) - AI-powered development introduction
+- [**Developer Workflows**](docs/DEVELOPER_WORKFLOWS.md) - AI-integrated development processes  
+- [**Intelligence Systems**](docs/INTELLIGENCE_SYSTEMS.md) - Advanced AI features
+- [**CLAUDE.md**](CLAUDE.md) - Comprehensive development guide
 
 ## License
 
