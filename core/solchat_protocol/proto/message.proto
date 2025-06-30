@@ -90,4 +90,19 @@ message ReadReceipt {
   
   // Unix timestamp when the message was read
   uint64 timestamp = 4;
+}
+
+// Ping message for connection keep-alive
+message PingMessage {
+  string id = 1;
+  uint64 timestamp = 2;
+  bytes data = 3;
+}
+
+// Pong message in response to a ping
+message PongMessage {
+  string id = 1;
+  string ref_ping_id = 2;
+  uint64 timestamp = 3;
+  bytes data = 4;
 } 

@@ -71,7 +71,7 @@ describe('useSolConnect Hook', () => {
   beforeEach(() => {
     mockSDK = createMockSDK();
     
-    const { initializeSDK, getSDK, cleanupSDK } = require('../../services/SolConnectSDK');
+    
     initializeSDK.mockResolvedValue({ success: true, data: mockSDK });
     getSDK.mockReturnValue(mockSDK);
     cleanupSDK.mockResolvedValue({ success: true });
@@ -97,7 +97,7 @@ describe('useSolConnect Hook', () => {
     });
 
     it('should handle initialization failure', async () => {
-      const { initializeSDK } = require('../../services/SolConnectSDK');
+
       initializeSDK.mockResolvedValue({
         success: false,
         error: { code: ErrorCode.CONNECTION_FAILED, message: 'Failed to connect' }
@@ -240,7 +240,7 @@ describe('useSession Hook', () => {
   beforeEach(() => {
     mockSDK = createMockSDK();
     
-    const { getSDK } = require('../../services/SolConnectSDK');
+    import { getSDK } from '../../services/SolConnectSDK';
     getSDK.mockReturnValue(mockSDK);
     
     jest.clearAllMocks();
@@ -318,7 +318,7 @@ describe('useMessages Hook', () => {
       };
     });
     
-    const { getSDK } = require('../../services/SolConnectSDK');
+    import { getSDK } from '../../services/SolConnectSDK';
     getSDK.mockReturnValue(mockSDK);
     
     jest.clearAllMocks();

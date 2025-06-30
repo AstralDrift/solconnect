@@ -16,6 +16,8 @@ import { EncryptionService, initializeEncryptionService, getEncryptionService } 
 import { SyncMessageFactory } from './sync/SyncProtocol';
 import { getReactionService, ReactionSummary } from './ReactionService';
 import { MessageHandler as ProtocolMessageHandler } from './protocol/MessageHandler';
+import { getTypingIndicatorService } from './TypingIndicatorService';
+import { TypingIndicatorEvent } from '../types/typing';
 
 export interface MessageBusConfig {
   relayEndpoint: string;
@@ -96,6 +98,9 @@ export class MessageBus {
   // Protocol message handler for read receipts and status updates
   private protocolMessageHandler?: ProtocolMessageHandler;
   
+  // Typing indicator service
+  private typingService = getTypingIndicatorService();
+  
   // Read receipt batching for performance optimization
   private readReceiptBatch = new Map<string, Set<string>>(); // sessionId -> Set of messageIds
   private readReceiptBatchTimer = new Map<string, NodeJS.Timeout>(); // sessionId -> timeout
@@ -167,6 +172,17 @@ export class MessageBus {
           this.encryptionService = encryptionResult.data!;
           this.messageInterceptor = this.encryptionService.createMessageInterceptor();
           this.logger.info('Encryption service initialized successfully');
+        }
+      }
+
+      // Initialize typing indicator service if wallet address provided
+      if (walletAddress) {
+        const typingResult = await this.typingService.initialize(walletAddress);
+        if (!typingResult.success) {
+          this.logger.warn('Failed to initialize typing indicator service:', typingResult.error);
+          // Continue without typing indicators
+        } else {
+          this.logger.info('Typing indicator service initialized successfully');
         }
       }
 
@@ -1073,6 +1089,52 @@ export class MessageBus {
   }
 
   // ===================================================================
+  // TYPING INDICATOR METHODS
+  // ===================================================================
+
+  /**
+   * Start typing indicator for a session
+   */
+  async startTyping(sessionId: string): Promise<Result<void>> {
+    return await this.typingService.startTyping(sessionId);
+  }
+
+  /**
+   * Stop typing indicator for a session
+   */
+  async stopTyping(sessionId: string): Promise<Result<void>> {
+    return await this.typingService.stopTyping(sessionId);
+  }
+
+  /**
+   * Get list of users currently typing in a session
+   */
+  getTypingUsers(sessionId: string): string[] {
+    return this.typingService.getTypingUsers(sessionId);
+  }
+
+  /**
+   * Check if anyone is typing in a session
+   */
+  isAnyoneTyping(sessionId: string): boolean {
+    return this.typingService.isAnyoneTyping(sessionId);
+  }
+
+  /**
+   * Subscribe to typing indicator events
+   */
+  onTypingEvent(handler: (event: TypingIndicatorEvent) => void): void {
+    this.typingService.addEventListener(handler);
+  }
+
+  /**
+   * Unsubscribe from typing indicator events
+   */
+  offTypingEvent(handler: (event: TypingIndicatorEvent) => void): void {
+    this.typingService.removeEventListener(handler);
+  }
+
+  // ===================================================================
   // REACTION METHODS
   // ===================================================================
 
@@ -1742,7 +1804,7 @@ export class MessageBus {
 
   private async handleIncomingTypingIndicator(message: any): Promise<void> {
     try {
-      const { userWallet, isTyping, roomId } = message;
+      const { userWallet, isTyping, roomId, timestamp } = message;
       
       this.logger.debug('Received typing indicator', { 
         userWallet, 
@@ -1750,8 +1812,15 @@ export class MessageBus {
         roomId 
       });
 
-      // Notify typing indicator handlers (if implemented)
-      // This could be extended to support typing indicators in the UI
+      // Convert to TypingIndicatorEvent format and pass to service
+      const typingEvent: TypingIndicatorEvent = {
+        type: isTyping ? 'typing_start' : 'typing_stop',
+        sessionId: roomId,
+        userWallet,
+        timestamp: timestamp || new Date().toISOString()
+      };
+
+      this.typingService.handleIncomingTypingEvent(typingEvent);
       
     } catch (error) {
       this.logger.error('Error handling typing indicator', error);

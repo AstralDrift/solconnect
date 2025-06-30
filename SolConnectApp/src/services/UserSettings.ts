@@ -210,6 +210,13 @@ export class UserSettingsService {
   }
 
   /**
+   * Check if typing indicators should be shown
+   */
+  shouldShowTypingIndicators(): boolean {
+    return this.settings.privacy.showTypingIndicators;
+  }
+
+  /**
    * Subscribe to settings changes
    */
   addSettingsListener(listener: (settings: UserSettings) => void): () => void {
