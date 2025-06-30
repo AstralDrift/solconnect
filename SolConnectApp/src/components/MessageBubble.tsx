@@ -6,6 +6,7 @@ import { MessageStatusIndicator } from './MessageStatusIndicator';
 import { MessageReactions } from './MessageReactions';
 import { EmojiPicker } from './EmojiPicker';
 import { getMessageBus } from '../services/MessageBus';
+import { getUserSettingsService } from '../services/UserSettings';
 
 interface MessageBubbleProps {
   message: Message;
@@ -29,12 +30,48 @@ export function MessageBubble({
   const [reactions, setReactions] = useState<ReactionSummary[]>([]);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [isLoadingReactions, setIsLoadingReactions] = useState(false);
+  const [hasBeenSeen, setHasBeenSeen] = useState(false);
 
   useEffect(() => {
     if (showReactions && message.id && currentUserAddress) {
       loadReactions();
     }
   }, [message.id, currentUserAddress, showReactions]);
+
+  // Auto-send read receipt when message becomes visible
+  useEffect(() => {
+    const shouldSendReadReceipt = 
+      !isOwnMessage && // Only for messages from others
+      message.id && 
+      sessionId && 
+      currentUserAddress && 
+      !hasBeenSeen && // Only send once
+      message.status !== 'read'; // Don't send if already read
+
+    if (shouldSendReadReceipt) {
+      const sendReadReceipt = async () => {
+        try {
+          // Check user privacy settings before sending read receipt
+          const userSettings = getUserSettingsService();
+          if (!userSettings.shouldSendReadReceipts()) {
+            console.log('Read receipts disabled by user settings');
+            setHasBeenSeen(true); // Mark as seen but don't send receipt
+            return;
+          }
+
+          const messageBus = getMessageBus();
+          await messageBus.sendReadReceipt(sessionId, message.id!, 'read');
+          setHasBeenSeen(true);
+        } catch (error) {
+          console.error('Error sending read receipt:', error);
+        }
+      };
+
+      // Send read receipt with a small delay to ensure message is actually visible
+      const timer = setTimeout(sendReadReceipt, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [isOwnMessage, message.id, message.status, sessionId, currentUserAddress, hasBeenSeen]);
 
   const loadReactions = async () => {
     if (!message.id || !currentUserAddress) return;
@@ -127,6 +164,8 @@ export function MessageBubble({
               showTooltip={true}
               size="small"
               theme={theme}
+              readByUserAddress={message.status === 'read' ? currentUserAddress : undefined}
+              showReadReceipts={getUserSettingsService().shouldSendReadReceipts()}
             />
           </View>
         )}

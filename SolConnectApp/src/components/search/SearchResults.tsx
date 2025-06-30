@@ -145,7 +145,7 @@ export const SearchResults: React.FC<SearchResultsProps> = ({
             <ChatBubbleLeftRightIcon className="w-16 h-16 text-gray-300 mb-4" />
             <h3 className="text-lg font-medium text-gray-900 mb-2">No messages found</h3>
             <p className="text-gray-500 max-w-md">
-              Try adjusting your search terms or filters to find what you're looking for.
+              Try adjusting your search terms or filters to find what you&apos;re looking for.
             </p>
           </div>
         ) : (
@@ -262,7 +262,7 @@ export const SearchResults: React.FC<SearchResultsProps> = ({
         {/* End of Results */}
         {!loading && !hasMore && results.length > 0 && (
           <div className="text-center p-6 text-sm text-gray-500 border-t border-gray-200">
-            You've reached the end of the search results
+            You&apos;ve reached the end of the search results
           </div>
         )}
       </div>

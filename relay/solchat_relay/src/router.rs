@@ -1,5 +1,5 @@
 use anyhow::Result;
-use quinn::{SendStream, RecvStream};
+
 use solchat_protocol::messages::{ChatMessage, AckMessage, AckStatus, ReadReceipt, PingMessage, PongMessage};
 use solchat_protocol::WalletAddress;
 use std::collections::HashMap;
@@ -109,7 +109,7 @@ impl MessageRouter {
         match relay_message {
             RelayMessage::Chat(message) => {
                 // Validate the message
-                let recipient = message.recipient_wallet;
+                let recipient = message.recipient_wallet.clone();
                 
                 let recipient_str = recipient.to_string();
                 let routable = RoutableMessage {
@@ -193,12 +193,12 @@ impl MessageRouter {
                     Ok(AckStatus::Failed)
                 }
             },
-            RelayMessage::Ping(ping_message) => {
+            RelayMessage::Ping(_ping_message) => {
                 info!("Received ping from {:?}", sender_addr);
                 // Pings are not routed, just acknowledged implicitly by connection staying alive
                 Ok(AckStatus::Delivered)
             },
-            RelayMessage::Pong(pong_message) => {
+            RelayMessage::Pong(_pong_message) => {
                 info!("Received pong from {:?}", sender_addr);
                 // Pongs are not routed
                 Ok(AckStatus::Delivered)

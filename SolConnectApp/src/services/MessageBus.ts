@@ -15,6 +15,9 @@ import { DatabaseService } from './database/DatabaseService';
 import { EncryptionService, initializeEncryptionService, getEncryptionService } from './crypto/EncryptionService';
 import { SyncMessageFactory } from './sync/SyncProtocol';
 import { getReactionService, ReactionSummary } from './ReactionService';
+import { MessageHandler as ProtocolMessageHandler } from './protocol/MessageHandler';
+import { getTypingIndicatorService } from './TypingIndicatorService';
+import { TypingIndicatorEvent } from '../types/typing';
 
 export interface MessageBusConfig {
   relayEndpoint: string;
@@ -91,6 +94,20 @@ export class MessageBus {
   // Reaction tracking
   private reactionEventHandlers = new Map<string, ReactionEventHandler>();
   private reactionService = getReactionService();
+  
+  // Protocol message handler for read receipts and status updates
+  private protocolMessageHandler?: ProtocolMessageHandler;
+  
+  // Typing indicator service
+  private typingService = getTypingIndicatorService();
+  
+  // Read receipt batching for performance optimization
+  private readReceiptBatch = new Map<string, Set<string>>(); // sessionId -> Set of messageIds
+  private readReceiptBatchTimer = new Map<string, NodeJS.Timeout>(); // sessionId -> timeout
+  private readonly BATCH_DELAY_MS = 500; // Delay before sending batched receipts
+  private readonly MAX_BATCH_SIZE = 50; // Maximum messages in a batch
+  private batchRetryCount = new Map<string, number>(); // sessionId -> retry count
+  private readonly MAX_BATCH_RETRIES = 3; // Maximum retry attempts per batch
 
   constructor(config: MessageBusConfig) {
     this.config = {
@@ -111,6 +128,16 @@ export class MessageBus {
 
     this.deviceId = this.config.deviceId;
     this.transport = TransportFactory.create(this.config.transportType);
+    
+    // Initialize protocol message handler with status update callback
+    this.protocolMessageHandler = new ProtocolMessageHandler({
+      enableAutoAck: true,
+      enableHeartbeat: true,
+      onStatusUpdate: (update: MessageStatusUpdate) => {
+        // Forward status updates to all registered handlers
+        this.notifyStatusUpdateHandlers(update);
+      }
+    });
   }
 
   /**
@@ -145,6 +172,17 @@ export class MessageBus {
           this.encryptionService = encryptionResult.data!;
           this.messageInterceptor = this.encryptionService.createMessageInterceptor();
           this.logger.info('Encryption service initialized successfully');
+        }
+      }
+
+      // Initialize typing indicator service if wallet address provided
+      if (walletAddress) {
+        const typingResult = await this.typingService.initialize(walletAddress);
+        if (!typingResult.success) {
+          this.logger.warn('Failed to initialize typing indicator service:', typingResult.error);
+          // Continue without typing indicators
+        } else {
+          this.logger.info('Typing indicator service initialized successfully');
         }
       }
 
@@ -314,11 +352,37 @@ export class MessageBus {
   }
 
   /**
-   * Send a read receipt for a message
+   * Send a read receipt for a message (with batching optimization)
    */
   async sendReadReceipt(sessionId: string, messageId: string, status: 'delivered' | 'read'): Promise<Result<void>> {
     try {
-      this.logger.info('Sending read receipt', { sessionId, messageId, status });
+      this.logger.debug('Adding read receipt to batch', { sessionId, messageId, status });
+
+      // Add to batch for performance optimization
+      if (status === 'read') {
+        this.addToReadReceiptBatch(sessionId, messageId);
+        return createResult.success(undefined);
+      }
+
+      // For 'delivered' status, send immediately as it's typically time-sensitive
+      return await this.sendImmediateReadReceipt(sessionId, messageId, status);
+    } catch (error) {
+      this.logger.error('Failed to send read receipt', error);
+      return createResult.error(SolConnectError.system(
+        ErrorCode.UNKNOWN_ERROR,
+        `Failed to send read receipt: ${error}`,
+        'Failed to send read receipt',
+        { error: error?.toString() }
+      ));
+    }
+  }
+
+  /**
+   * Send a read receipt immediately without batching
+   */
+  private async sendImmediateReadReceipt(sessionId: string, messageId: string, status: 'delivered' | 'read'): Promise<Result<void>> {
+    try {
+      this.logger.info('Sending immediate read receipt', { sessionId, messageId, status });
 
       // Create read receipt
       const receipt = {
@@ -354,13 +418,128 @@ export class MessageBus {
 
       return createResult.success(undefined);
     } catch (error) {
-      this.logger.error('Failed to send read receipt', error);
+      this.logger.error('Failed to send immediate read receipt', error);
       return createResult.error(SolConnectError.system(
         ErrorCode.UNKNOWN_ERROR,
-        `Failed to send read receipt: ${error}`,
+        `Failed to send immediate read receipt: ${error}`,
         'Failed to send read receipt',
         { error: error?.toString() }
       ));
+    }
+  }
+
+  /**
+   * Add a message to the read receipt batch
+   */
+  private addToReadReceiptBatch(sessionId: string, messageId: string): void {
+    // Initialize batch for session if not exists
+    if (!this.readReceiptBatch.has(sessionId)) {
+      this.readReceiptBatch.set(sessionId, new Set());
+    }
+
+    // Add message to batch
+    const batch = this.readReceiptBatch.get(sessionId)!;
+    batch.add(messageId);
+
+    this.logger.debug('Added to read receipt batch', { 
+      sessionId, 
+      messageId, 
+      batchSize: batch.size 
+    });
+
+    // Check if batch is full and should be sent immediately
+    if (batch.size >= this.MAX_BATCH_SIZE) {
+      this.flushReadReceiptBatch(sessionId);
+      return;
+    }
+
+    // Clear existing timer for this session
+    const existingTimer = this.readReceiptBatchTimer.get(sessionId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    // Set new timer to send batch after delay
+    const timer = setTimeout(() => {
+      this.flushReadReceiptBatch(sessionId);
+    }, this.BATCH_DELAY_MS);
+
+    this.readReceiptBatchTimer.set(sessionId, timer);
+  }
+
+  /**
+   * Flush read receipt batch for a session
+   */
+  private async flushReadReceiptBatch(sessionId: string): Promise<void> {
+    const batch = this.readReceiptBatch.get(sessionId);
+    if (!batch || batch.size === 0) {
+      return;
+    }
+
+    const messageIds = Array.from(batch);
+    this.logger.info('Flushing read receipt batch', { 
+      sessionId, 
+      messageCount: messageIds.length 
+    });
+
+    // Clear batch and timer
+    this.readReceiptBatch.delete(sessionId);
+    const timer = this.readReceiptBatchTimer.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      this.readReceiptBatchTimer.delete(sessionId);
+    }
+
+    // Send batch via existing markMessagesAsRead method
+    try {
+      const result = await this.markMessagesAsRead(sessionId, messageIds);
+      if (result.success) {
+        // Reset retry count on successful batch send
+        this.batchRetryCount.delete(sessionId);
+        this.logger.debug('Read receipt batch sent successfully', { sessionId, messageCount: messageIds.length });
+      } else {
+        this.logger.error('Failed to flush read receipt batch', result.error);
+        
+        // Implement exponential backoff retry
+        const retryCount = this.batchRetryCount.get(sessionId) || 0;
+        if (retryCount < this.MAX_BATCH_RETRIES) {
+          this.batchRetryCount.set(sessionId, retryCount + 1);
+          const retryDelay = Math.pow(2, retryCount) * 1000; // Exponential backoff
+          
+          setTimeout(() => {
+            for (const messageId of messageIds) {
+              this.addToReadReceiptBatch(sessionId, messageId);
+            }
+          }, retryDelay);
+          
+          this.logger.info('Retry scheduled for read receipt batch', { 
+            sessionId, 
+            retryCount: retryCount + 1, 
+            retryDelay 
+          });
+        } else {
+          this.logger.error('Max retries exceeded for read receipt batch', { sessionId });
+          this.batchRetryCount.delete(sessionId);
+        }
+      }
+    } catch (error) {
+      this.logger.error('Error flushing read receipt batch', error);
+      
+      // Implement exponential backoff retry for errors
+      const retryCount = this.batchRetryCount.get(sessionId) || 0;
+      if (retryCount < this.MAX_BATCH_RETRIES) {
+        this.batchRetryCount.set(sessionId, retryCount + 1);
+        const retryDelay = Math.pow(2, retryCount) * 1000;
+        
+        setTimeout(() => {
+          for (const messageId of messageIds) {
+            this.addToReadReceiptBatch(sessionId, messageId);
+          }
+        }, retryDelay);
+      } else {
+        this.logger.error('Max retries exceeded for read receipt batch error handling', { sessionId });
+        this.batchRetryCount.delete(sessionId);
+      }
     }
   }
 
@@ -910,6 +1089,52 @@ export class MessageBus {
   }
 
   // ===================================================================
+  // TYPING INDICATOR METHODS
+  // ===================================================================
+
+  /**
+   * Start typing indicator for a session
+   */
+  async startTyping(sessionId: string): Promise<Result<void>> {
+    return await this.typingService.startTyping(sessionId);
+  }
+
+  /**
+   * Stop typing indicator for a session
+   */
+  async stopTyping(sessionId: string): Promise<Result<void>> {
+    return await this.typingService.stopTyping(sessionId);
+  }
+
+  /**
+   * Get list of users currently typing in a session
+   */
+  getTypingUsers(sessionId: string): string[] {
+    return this.typingService.getTypingUsers(sessionId);
+  }
+
+  /**
+   * Check if anyone is typing in a session
+   */
+  isAnyoneTyping(sessionId: string): boolean {
+    return this.typingService.isAnyoneTyping(sessionId);
+  }
+
+  /**
+   * Subscribe to typing indicator events
+   */
+  onTypingEvent(handler: (event: TypingIndicatorEvent) => void): void {
+    this.typingService.addEventListener(handler);
+  }
+
+  /**
+   * Unsubscribe from typing indicator events
+   */
+  offTypingEvent(handler: (event: TypingIndicatorEvent) => void): void {
+    this.typingService.removeEventListener(handler);
+  }
+
+  // ===================================================================
   // REACTION METHODS
   // ===================================================================
 
@@ -1249,6 +1474,21 @@ export class MessageBus {
   }
 
   /**
+   * Process raw protocol message (for use by transport layer)
+   */
+  async processProtocolMessage(data: Uint8Array): Promise<Result<void>> {
+    if (!this.protocolMessageHandler) {
+      return createResult.error(SolConnectError.system(
+        ErrorCode.UNKNOWN_ERROR,
+        'Protocol message handler not initialized',
+        'Cannot process protocol messages'
+      ));
+    }
+
+    return await this.protocolMessageHandler.processMessage(data);
+  }
+
+  /**
    * Get current connection status
    */
   get connectionStatus() {
@@ -1314,6 +1554,9 @@ export class MessageBus {
         this.networkManager.destroy();
       }
 
+      // Cleanup read receipt batching
+      this.cleanupReadReceiptBatches();
+
       this.isInitialized = false;
       this.messageQueue = [];
       this.syncInProgress = false;
@@ -1329,6 +1572,24 @@ export class MessageBus {
         { error: error?.toString() }
       ));
     }
+  }
+
+  /**
+   * Cleanup read receipt batching resources
+   */
+  private cleanupReadReceiptBatches(): void {
+    // Clear all batch timers
+    for (const [sessionId, timer] of this.readReceiptBatchTimer) {
+      clearTimeout(timer);
+      this.logger.debug('Cleared read receipt batch timer', { sessionId });
+    }
+    
+    // Clear all batches
+    this.readReceiptBatch.clear();
+    this.readReceiptBatchTimer.clear();
+    this.batchRetryCount.clear();
+    
+    this.logger.info('Read receipt batching cleanup completed');
   }
 
   // Private methods
@@ -1543,7 +1804,7 @@ export class MessageBus {
 
   private async handleIncomingTypingIndicator(message: any): Promise<void> {
     try {
-      const { userWallet, isTyping, roomId } = message;
+      const { userWallet, isTyping, roomId, timestamp } = message;
       
       this.logger.debug('Received typing indicator', { 
         userWallet, 
@@ -1551,8 +1812,15 @@ export class MessageBus {
         roomId 
       });
 
-      // Notify typing indicator handlers (if implemented)
-      // This could be extended to support typing indicators in the UI
+      // Convert to TypingIndicatorEvent format and pass to service
+      const typingEvent: TypingIndicatorEvent = {
+        type: isTyping ? 'typing_start' : 'typing_stop',
+        sessionId: roomId,
+        userWallet,
+        timestamp: timestamp || new Date().toISOString()
+      };
+
+      this.typingService.handleIncomingTypingEvent(typingEvent);
       
     } catch (error) {
       this.logger.error('Error handling typing indicator', error);

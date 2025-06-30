@@ -1,229 +1,145 @@
-# ADR-0002: Cryptographic Design and Security Architecture
+# ADR-0002: Cryptographic Design
 
-**Status**: Accepted  
-**Date**: 2024-01-15  
-**Deciders**: SolConnect Core Team  
-**Related**: [ADR-0001: Wallet-Only Identity](./ADR-0001-WalletIdentity.md)
+## Status
+**IMPLEMENTED** - Core Signal Protocol foundation completed
 
 ## Context
-
-SolConnect requires robust end-to-end encryption for wallet-native messaging on Solana Mobile. The design must:
-
-1. Leverage existing Solana wallet keys for identity and key derivation
-2. Provide forward secrecy and deniability properties
-3. Integrate with hardware security modules (Seed Vault)
-4. Support asynchronous messaging scenarios
-5. Maintain compatibility across iOS and Android platforms
+SolConnect requires end-to-end encryption for private messaging while maintaining compatibility across web, mobile, and desktop platforms. The solution must provide forward secrecy, be resistant to compromise, and integrate with Solana wallet-based identity.
 
 ## Decision
+We will implement the **Signal Protocol** with the following architecture:
 
-We will implement a **hybrid cryptographic system** using:
+### Core Components
 
-1. **Ed25519 → X25519 key derivation** for ECDH key exchange
-2. **Double Ratchet protocol** for forward-secure messaging
-3. **Solana Mobile Seed Vault** for hardware-backed key operations
-4. **AES-256-GCM** for symmetric encryption
+1. **CryptoUtils.ts** - Cross-platform cryptographic operations
+   - WebCrypto API for browsers/modern Node.js environments
+   - Noble crypto library fallbacks for Node.js/Jest environments
+   - Ed25519 digital signatures for identity and authentication
+   - X25519 ECDH for key agreement
+   - AES-GCM for symmetric encryption
+   - HKDF for key derivation
 
-## Cryptographic Components
+2. **SignalProtocol.ts** - Main protocol implementation
+   - X3DH (Extended Triple Diffie-Hellman) for initial key agreement
+   - Double Ratchet algorithm for ongoing message encryption
+   - Forward and backward secrecy guarantees
+   - Out-of-order message handling with skipped message keys
 
-### 1. Key Derivation
+3. **KeyStorage.ts** - Secure key management
+   - IndexedDB storage for browsers
+   - localStorage fallback for simple environments
+   - Optional password-based encryption for stored keys
+   - Automatic key rotation and cleanup
 
-```
-Ed25519 Wallet Key → HKDF-SHA256 → X25519 ECDH Key
-```
+4. **VectorClock.ts** - Conflict resolution for distributed messaging
+   - Causality tracking across devices
+   - Deterministic conflict resolution strategies
 
-- **Input**: Ed25519 wallet keypair (existing Solana wallet)
-- **Process**: HKDF with salt = Ed25519 public key, info = "SolConnect-X25519-Derivation"
-- **Output**: X25519 keypair for Elliptic Curve Diffie-Hellman
+### Protocol Flow
 
-**Rationale**: Allows users to derive messaging keys deterministically from their wallet keys without exposing the wallet private key in messaging operations.
+1. **Identity Key Generation**: Each wallet generates Ed25519 identity key pair
+2. **Pre-Key Bundle Creation**: Generate signed pre-keys and one-time keys for others to initiate conversations
+3. **Session Establishment**: Use X3DH to establish shared secret and initial ratchet state
+4. **Message Encryption**: Use Double Ratchet to encrypt each message with forward secrecy
+5. **Message Decryption**: Decrypt using current ratchet state, handling out-of-order delivery
 
-### 2. Session Establishment
+### Cross-Platform Compatibility
 
-```
-Alice                           Bob
-------                         -----
-Ed25519_A → X25519_A          Ed25519_B → X25519_B
-      \                        /
-       \                      /
-        → Shared Secret ←
-           (ECDH)
-             ↓
-       Double Ratchet
-     Initial Root Key
-```
+- **Browser**: Uses WebCrypto API for hardware-accelerated operations
+- **Node.js**: Falls back to Noble crypto pure-JS implementations
+- **Mobile**: Will integrate with platform-specific crypto libraries via FFI
+- **Testing**: Jest-compatible mocks for deterministic testing
 
-- **Key Agreement**: X25519 ECDH between derived keys
-- **Root Key**: SHA256(shared_secret || "SolConnect-Root-Key")
-- **Session ID**: Base58(Alice_wallet || ":" || Bob_wallet)
+## Implementation Status
 
-### 3. Double Ratchet Protocol
+### ✅ Completed
+- Core cryptographic utilities with WebCrypto + Noble fallbacks
+- Signal Protocol foundation with Double Ratchet algorithm
+- Secure key storage with multiple backend support
+- Comprehensive test suite covering all crypto operations
+- Jest configuration for crypto testing in Node.js
 
-Based on Signal's Double Ratchet specification:
+### 🚧 In Progress
+- Integration with MessageBus for transparent encryption
+- Production optimizations and security hardening
+- Mobile platform-specific implementations
 
-- **Symmetric-key ratchet**: Forward secrecy via key deletion
-- **Diffie-Hellman ratchet**: Future secrecy via new ECDH rounds
-- **Message keys**: HKDF-derived from chain keys
-- **Encryption**: AES-256-GCM with authenticated additional data
+### 📋 Planned
+- Integration with SolConnect SDK
+- Automated key rotation policies
+- Security audit and penetration testing
+- Performance optimizations for mobile devices
 
-**Properties Achieved**:
-- **Forward Secrecy**: Old keys cannot decrypt new messages
-- **Future Secrecy**: Compromised state cannot decrypt future messages  
-- **Deniability**: No cryptographic proof of message authorship
+## Security Considerations
 
-### 4. Hardware Security Integration
+### Threat Model
+- **Passive Network Eavesdropping**: Mitigated by end-to-end encryption
+- **Active Network Attacks**: Mitigated by authenticated encryption and identity verification
+- **Device Compromise**: Mitigated by forward secrecy (past messages remain secure)
+- **Server Compromise**: Mitigated by zero-knowledge architecture (server never sees plaintext)
 
-**Seed Vault Operations** (Hardware Security Module):
-```rust
-// All operations happen in secure hardware
-trait SeedVaultProvider {
-    fn sign_message(message: &[u8]) -> HardwareSignature;
-    fn derive_shared_secret(peer_pubkey: &[u8]) -> SharedSecret;
-    fn get_public_key() -> Ed25519PublicKey;
-}
-```
+### Key Management
+- Identity keys derived from or linked to Solana wallet keys
+- Regular rotation of signed pre-keys and one-time keys
+- Secure deletion of used one-time keys
+- Optional user password for additional key encryption
 
-**Security Boundaries**:
-- ✅ **In Hardware**: Ed25519 private key, X25519 derivation, ECDH computation
-- ⚠️ **In Process**: Double ratchet state, message keys, session management
-- ❌ **Never Exposed**: Wallet private key, derived X25519 private key
+### Forward Secrecy
+- Double Ratchet provides forward secrecy after each message
+- Compromised device cannot decrypt past messages
+- Regular key rotation limits exposure window
 
-## Threat Model
+## Testing Strategy
 
-### Protected Against
+### Unit Tests
+- All cryptographic primitives tested with known test vectors
+- Protocol flow tested with Alice/Bob scenarios
+- Error handling and edge cases covered
 
-| Threat | Protection |
-|--------|------------|
-| **Passive Eavesdropping** | End-to-end encryption with AES-256-GCM |
-| **Man-in-the-Middle** | Public key verification via wallet identity |
-| **Key Compromise (Past)** | Forward secrecy via key ratcheting |
-| **Key Compromise (Future)** | Future secrecy via new ECDH rounds |
-| **Message Replay** | Nonce-based message ordering |
-| **Impersonation** | Hardware-backed message signing |
-| **Device Theft** | Hardware security module protection |
+### Integration Tests
+- Full message encryption/decryption flow
+- Cross-device synchronization scenarios
+- Network failure and recovery testing
 
-### NOT Protected Against
+### Security Tests
+- Key derivation determinism verification
+- Forward secrecy validation
+- Side-channel attack resistance (future)
 
-| Threat | Mitigation Strategy |
-|--------|-------------------|
-| **Endpoint Compromise** | ⚠️ Device-level security, app sandboxing |
-| **Social Engineering** | 📚 User education, clear security indicators |
-| **Metadata Analysis** | 🔄 Future: Onion routing, traffic padding |
-| **Attachment Encryption** | 🔄 Future: Separate attachment key ratchet |
-| **Group Messaging** | 🔄 Future: Multi-party protocols |
+## Performance Considerations
 
-## Algorithm Specifications
+### Optimization Targets
+- Initial session establishment: < 100ms
+- Message encryption/decryption: < 10ms
+- Key storage operations: < 50ms
+- Memory usage: < 10MB for active sessions
 
-### Key Derivation Function
+### Scaling Considerations
+- Support for 1000+ concurrent conversations
+- Efficient handling of large message histories
+- Background key rotation without blocking UI
 
-```rust
-fn derive_x25519_from_ed25519(
-    ed25519_pubkey: &Ed25519PublicKey,
-    ed25519_privkey: &Ed25519SecretKey,
-) -> X25519KeyPair {
-    let hkdf = HKDF-SHA256(
-        salt: ed25519_pubkey.bytes(),
-        ikm: ed25519_privkey.bytes()
-    );
-    let x25519_secret = hkdf.expand(
-        info: "SolConnect-X25519-Derivation",
-        length: 32
-    );
-    X25519KeyPair::from(x25519_secret)
-}
-```
+## Future Enhancements
 
-### Session Key Derivation
+1. **Group Messaging**: Extend protocol for multi-party conversations
+2. **Voice/Video**: Integrate with WebRTC for encrypted calls  
+3. **File Sharing**: Implement encrypted file transfer protocol
+4. **Backup/Restore**: Secure backup of conversation history
+5. **Cross-Device Sync**: Synchronize sessions across user devices
 
-```rust
-fn derive_session_key(local: &[u8; 32], remote: &[u8; 32]) -> [u8; 32] {
-    SHA256("SolConnect-Session-Key" || local || remote)
-}
-```
+## Compliance
 
-### Message Encryption
-
-```rust
-fn encrypt_message(plaintext: &[u8], key: &[u8; 32]) -> EncryptedMessage {
-    let cipher = AES-256-GCM::new(key);
-    let nonce = generate_nonce(); // 96-bit random
-    let ciphertext = cipher.encrypt(nonce, plaintext);
-    EncryptedMessage { nonce, ciphertext }
-}
-```
-
-## Implementation Security
-
-### Memory Protection
-
-- **Zeroization**: All private keys zeroized on drop (`zeroize` crate)
-- **No Swapping**: Mark sensitive pages non-swappable where possible
-- **Constant Time**: Use constant-time comparison for secrets
-
-### Error Handling
-
-- **No Leak**: Cryptographic errors don't leak timing information
-- **Generic Errors**: Return generic "decryption failed" messages
-- **Logging**: No sensitive data in logs (production builds)
-
-### Test Vectors
-
-Deterministic test vectors for cross-platform compatibility:
-
-```rust
-// Ed25519 test keypair
-ed25519_secret = 0x9d61b19d...
-ed25519_public = 0xd75a9801...
-
-// Expected X25519 derivation
-x25519_secret = derive_x25519(ed25519_public, ed25519_secret)
-x25519_public = X25519PublicKey::from(x25519_secret)
-
-// Cross-language verification required
-```
-
-## Future Considerations
-
-### Planned Enhancements
-
-1. **Post-Quantum Cryptography**: Hybrid ECDH + CRYSTALS-Kyber
-2. **Group Messaging**: Multi-party double ratchet (MLS/TreeKEM)
-3. **Attachment Encryption**: Separate key ratchet for files
-4. **Metadata Protection**: Onion routing integration
-5. **Backup & Recovery**: Encrypted session state export
-
-### Open Risks
-
-1. **Quantum Threat**: Current ECC vulnerable to quantum computers
-2. **Side Channels**: Timing attacks on non-constant-time operations
-3. **Implementation Bugs**: Crypto is hard, bugs are likely
-4. **Key Management**: User wallet security is outside our control
-5. **Platform Trust**: Reliance on mobile OS security
-
-## Compliance & Standards
-
-- **FIPS 140-2**: AES, SHA-2, ECDH algorithms are FIPS approved
-- **Signal Protocol**: Double ratchet follows Signal specification
-- **RFC 7748**: X25519 ECDH implementation follows RFC standard
-- **RFC 8032**: Ed25519 signature scheme per RFC standard
-
-## Audit & Verification
-
-**Required Actions**:
-- [ ] External cryptographic audit by specialized firm
-- [ ] Formal verification of key derivation properties  
-- [ ] Cross-platform test vector validation
-- [ ] Hardware security module integration testing
-- [ ] Side-channel analysis on mobile devices
+- **GDPR**: Zero-knowledge architecture ensures data minimization
+- **SOX**: Cryptographic audit trails for financial communications
+- **HIPAA**: Healthcare-grade encryption for sensitive communications
 
 ## References
 
-- [Signal Protocol Documentation](https://signal.org/docs/)
-- [Double Ratchet Specification](https://signal.org/docs/specifications/doubleratchet/)
-- [X25519 RFC 7748](https://tools.ietf.org/html/rfc7748)
-- [Ed25519 RFC 8032](https://tools.ietf.org/html/rfc8032)
-- [HKDF RFC 5869](https://tools.ietf.org/html/rfc5869)
-- [Solana Mobile Security Architecture](https://solanamobile.com/developers)
+- [Signal Protocol Specification](https://signal.org/docs/)
+- [Double Ratchet Algorithm](https://signal.org/docs/specifications/doubleratchet/)
+- [X3DH Key Agreement](https://signal.org/docs/specifications/x3dh/)
+- [WebCrypto API Specification](https://www.w3.org/TR/WebCryptoAPI/)
+- [Noble Crypto Libraries](https://github.com/paulmillr/noble-ed25519)
 
 ---
 

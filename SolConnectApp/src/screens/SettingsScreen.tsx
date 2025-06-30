@@ -1,8 +1,10 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getSDK } from '../services/SolConnectSDK';
 import { getMessageStorage } from '../services/storage/MessageStorage';
 import { useToast } from '../components/Toast';
+import { getUserSettingsService, UserPrivacySettings } from '../services/UserSettings';
+import { RelayStatus } from '../components/monitoring/RelayStatus';
 
 export default function SettingsScreen(): JSX.Element {
   const navigate = useNavigate();
@@ -14,11 +16,28 @@ export default function SettingsScreen(): JSX.Element {
     messageCount: 0,
     sessionCount: 0
   });
+  const [privacySettings, setPrivacySettings] = useState<UserPrivacySettings>({
+    sendReadReceipts: true,
+    showTypingIndicators: true,
+    showOnlineStatus: true,
+    allowReactions: true
+  });
 
-  // Load storage statistics on mount
-  React.useEffect(() => {
+  // Load storage statistics and privacy settings on mount
+  useEffect(() => {
     loadStorageStats();
+    loadPrivacySettings();
   }, []);
+
+  const loadPrivacySettings = async () => {
+    try {
+      const userSettings = getUserSettingsService();
+      await userSettings.initialize();
+      setPrivacySettings(userSettings.getPrivacySettings());
+    } catch (error) {
+      console.error('Failed to load privacy settings:', error);
+    }
+  };
 
   const loadStorageStats = async () => {
     try {
@@ -200,6 +219,38 @@ export default function SettingsScreen(): JSX.Element {
     }
   }, [showToast]);
 
+  const handlePrivacySettingChange = useCallback(async (
+    setting: keyof UserPrivacySettings,
+    value: boolean
+  ) => {
+    try {
+      const userSettings = getUserSettingsService();
+      const result = await userSettings.updatePrivacySettings({ [setting]: value });
+      
+      if (result.success) {
+        setPrivacySettings(prev => ({ ...prev, [setting]: value }));
+        showToast({
+          type: 'success',
+          title: 'Settings updated',
+          message: 'Privacy settings have been saved successfully.'
+        });
+      } else {
+        showToast({
+          type: 'error',
+          title: 'Update failed',
+          message: result.error?.userMessage || 'Failed to update privacy settings.'
+        });
+      }
+    } catch (error) {
+      console.error('Privacy setting update error:', error);
+      showToast({
+        type: 'error',
+        title: 'Update failed',
+        message: 'An unexpected error occurred while updating settings.'
+      });
+    }
+  }, [showToast]);
+
   return (
     <div style={{
       display: 'flex',
@@ -246,6 +297,326 @@ export default function SettingsScreen(): JSX.Element {
         width: '100%',
         margin: '0 auto',
       }}>
+        {/* Privacy Settings Section */}
+        <div style={{
+          backgroundColor: '#fff',
+          borderRadius: '12px',
+          padding: '20px',
+          marginBottom: '20px',
+          boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)',
+        }}>
+          <h2 style={{
+            fontSize: '20px',
+            fontWeight: '600',
+            marginBottom: '20px',
+            color: '#333',
+          }}>
+            Privacy Settings
+          </h2>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+            {/* Read Receipts Setting */}
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '12px 0',
+              borderBottom: '1px solid #f0f0f0',
+            }}>
+              <div>
+                <h3 style={{
+                  fontSize: '16px',
+                  fontWeight: '500',
+                  margin: '0 0 4px 0',
+                  color: '#333',
+                }}>
+                  Send Read Receipts
+                </h3>
+                <p style={{
+                  fontSize: '14px',
+                  margin: 0,
+                  color: '#666',
+                }}>
+                  Let others know when you've read their messages
+                </p>
+              </div>
+              <label style={{
+                position: 'relative',
+                display: 'inline-block',
+                width: '44px',
+                height: '24px',
+              }}>
+                <input
+                  type="checkbox"
+                  checked={privacySettings.sendReadReceipts}
+                  onChange={(e) => handlePrivacySettingChange('sendReadReceipts', e.target.checked)}
+                  style={{
+                    opacity: 0,
+                    width: 0,
+                    height: 0,
+                  }}
+                />
+                <span style={{
+                  position: 'absolute',
+                  cursor: 'pointer',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  backgroundColor: privacySettings.sendReadReceipts ? '#9945FF' : '#ccc',
+                  borderRadius: '12px',
+                  transition: 'background-color 0.3s',
+                  '&:before': {
+                    position: 'absolute',
+                    content: '""',
+                    height: '18px',
+                    width: '18px',
+                    left: privacySettings.sendReadReceipts ? '23px' : '3px',
+                    bottom: '3px',
+                    backgroundColor: 'white',
+                    borderRadius: '50%',
+                    transition: 'left 0.3s',
+                  }
+                } as any}>
+                  <div style={{
+                    position: 'absolute',
+                    content: '""',
+                    height: '18px',
+                    width: '18px',
+                    left: privacySettings.sendReadReceipts ? '23px' : '3px',
+                    bottom: '3px',
+                    backgroundColor: 'white',
+                    borderRadius: '50%',
+                    transition: 'left 0.3s',
+                  }} />
+                </span>
+              </label>
+            </div>
+
+            {/* Allow Reactions Setting */}
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '12px 0',
+              borderBottom: '1px solid #f0f0f0',
+            }}>
+              <div>
+                <h3 style={{
+                  fontSize: '16px',
+                  fontWeight: '500',
+                  margin: '0 0 4px 0',
+                  color: '#333',
+                }}>
+                  Allow Reactions
+                </h3>
+                <p style={{
+                  fontSize: '14px',
+                  margin: 0,
+                  color: '#666',
+                }}>
+                  Allow others to react to your messages with emojis
+                </p>
+              </div>
+              <label style={{
+                position: 'relative',
+                display: 'inline-block',
+                width: '44px',
+                height: '24px',
+              }}>
+                <input
+                  type="checkbox"
+                  checked={privacySettings.allowReactions}
+                  onChange={(e) => handlePrivacySettingChange('allowReactions', e.target.checked)}
+                  style={{
+                    opacity: 0,
+                    width: 0,
+                    height: 0,
+                  }}
+                />
+                <span style={{
+                  position: 'absolute',
+                  cursor: 'pointer',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  backgroundColor: privacySettings.allowReactions ? '#9945FF' : '#ccc',
+                  borderRadius: '12px',
+                  transition: 'background-color 0.3s',
+                } as any}>
+                  <div style={{
+                    position: 'absolute',
+                    content: '""',
+                    height: '18px',
+                    width: '18px',
+                    left: privacySettings.allowReactions ? '23px' : '3px',
+                    bottom: '3px',
+                    backgroundColor: 'white',
+                    borderRadius: '50%',
+                    transition: 'left 0.3s',
+                  }} />
+                </span>
+              </label>
+            </div>
+
+            {/* Show Typing Indicators Setting */}
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '12px 0',
+              borderBottom: '1px solid #f0f0f0',
+            }}>
+              <div>
+                <h3 style={{
+                  fontSize: '16px',
+                  fontWeight: '500',
+                  margin: '0 0 4px 0',
+                  color: '#333',
+                }}>
+                  Show Typing Indicators
+                </h3>
+                <p style={{
+                  fontSize: '14px',
+                  margin: 0,
+                  color: '#666',
+                }}>
+                  Let others know when you're typing a message
+                </p>
+              </div>
+              <label style={{
+                position: 'relative',
+                display: 'inline-block',
+                width: '44px',
+                height: '24px',
+              }}>
+                <input
+                  type="checkbox"
+                  checked={privacySettings.showTypingIndicators}
+                  onChange={(e) => handlePrivacySettingChange('showTypingIndicators', e.target.checked)}
+                  style={{
+                    opacity: 0,
+                    width: 0,
+                    height: 0,
+                  }}
+                />
+                <span style={{
+                  position: 'absolute',
+                  cursor: 'pointer',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  backgroundColor: privacySettings.showTypingIndicators ? '#9945FF' : '#ccc',
+                  borderRadius: '12px',
+                  transition: 'background-color 0.3s',
+                } as any}>
+                  <div style={{
+                    position: 'absolute',
+                    content: '""',
+                    height: '18px',
+                    width: '18px',
+                    left: privacySettings.showTypingIndicators ? '23px' : '3px',
+                    bottom: '3px',
+                    backgroundColor: 'white',
+                    borderRadius: '50%',
+                    transition: 'left 0.3s',
+                  }} />
+                </span>
+              </label>
+            </div>
+
+            {/* Show Online Status Setting */}
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '12px 0',
+            }}>
+              <div>
+                <h3 style={{
+                  fontSize: '16px',
+                  fontWeight: '500',
+                  margin: '0 0 4px 0',
+                  color: '#333',
+                }}>
+                  Show Online Status
+                </h3>
+                <p style={{
+                  fontSize: '14px',
+                  margin: 0,
+                  color: '#666',
+                }}>
+                  Let others see when you&apos;re online
+                </p>
+              </div>
+              <label style={{
+                position: 'relative',
+                display: 'inline-block',
+                width: '44px',
+                height: '24px',
+              }}>
+                <input
+                  type="checkbox"
+                  checked={privacySettings.showOnlineStatus}
+                  onChange={(e) => handlePrivacySettingChange('showOnlineStatus', e.target.checked)}
+                  style={{
+                    opacity: 0,
+                    width: 0,
+                    height: 0,
+                  }}
+                />
+                <span style={{
+                  position: 'absolute',
+                  cursor: 'pointer',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  backgroundColor: privacySettings.showOnlineStatus ? '#9945FF' : '#ccc',
+                  borderRadius: '12px',
+                  transition: 'background-color 0.3s',
+                } as any}>
+                  <div style={{
+                    position: 'absolute',
+                    content: '""',
+                    height: '18px',
+                    width: '18px',
+                    left: privacySettings.showOnlineStatus ? '23px' : '3px',
+                    bottom: '3px',
+                    backgroundColor: 'white',
+                    borderRadius: '50%',
+                    transition: 'left 0.3s',
+                  }} />
+                </span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        {/* Relay Network Status */}
+        <div style={{
+          backgroundColor: '#fff',
+          borderRadius: '12px',
+          padding: '20px',
+          marginBottom: '20px',
+          boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)',
+        }}>
+          <h2 style={{
+            fontSize: '20px',
+            fontWeight: '600',
+            marginBottom: '20px',
+            color: '#333',
+          }}>
+            Network Connection
+          </h2>
+          <RelayStatus 
+            transport={(getSDK() as any)?.transport}
+            className="relay-status-settings"
+          />
+        </div>
+
         {/* Storage Section */}
         <div style={{
           backgroundColor: '#fff',
