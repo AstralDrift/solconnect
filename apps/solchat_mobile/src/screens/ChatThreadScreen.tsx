@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,9 @@ import { ThemedButton } from '../../../mobile/components/ThemedButton';
 import SolChatSDK from '../native/SolChatSDK';
 import { MessageFactory, protocolCodec } from '../../SolConnectApp/src/services/protocol/ProtocolBuffers';
 import type { Session, EncryptedMessage } from '../native/SolChatSDK';
+import { MessageHandler, ReadReceipt } from '../../SolConnectApp/src/services/protocol/MessageHandler';
+import { useTypingIndicator } from '../../../SolConnectApp/src/hooks/useTypingIndicator';
+import { TypingIndicator } from '../../../SolConnectApp/src/components/TypingIndicator';
 
 interface ChatThreadScreenProps {
   session: Session;
@@ -27,6 +30,12 @@ export const ChatThreadScreen: React.FC<ChatThreadScreenProps> = ({
   const [inputText, setInputText] = useState('');
   const [isSending, setIsSending] = useState(false);
   const flatListRef = useRef<FlatList>(null);
+  
+  // Typing indicator hook
+  const { isTyping, handleTypingStart, handleTypingStop } = useTypingIndicator({
+    sessionId: session.sessionId || '',
+    enabled: true
+  });
 
   useEffect(() => {
     // Initial message load
@@ -50,6 +59,8 @@ export const ChatThreadScreen: React.FC<ChatThreadScreenProps> = ({
     if (!inputText.trim() || isSending) return;
 
     setIsSending(true);
+    handleTypingStop(); // Stop typing when sending
+    
     try {
       await SolChatSDK.sendEncryptedMessage(session, inputText.trim());
       setInputText('');
@@ -61,6 +72,17 @@ export const ChatThreadScreen: React.FC<ChatThreadScreenProps> = ({
       setIsSending(false);
     }
   };
+  
+  const handleTextChange = useCallback((text: string) => {
+    setInputText(text);
+    
+    // Handle typing indicators
+    if (text.length > 0 && !isTyping) {
+      handleTypingStart();
+    } else if (text.length === 0 && isTyping) {
+      handleTypingStop();
+    }
+  }, [isTyping, handleTypingStart, handleTypingStop]);
 
   const renderMessage = ({ item }: { item: EncryptedMessage }) => {
     const isOwnMessage = item.sender === session.peerWallet;
@@ -94,13 +116,22 @@ export const ChatThreadScreen: React.FC<ChatThreadScreenProps> = ({
         keyExtractor={(item) => `${item.sender}-${item.timestamp}`}
         contentContainerStyle={styles.messagesList}
         onContentSizeChange={() => flatListRef.current?.scrollToEnd()}
+        ListFooterComponent={() => (
+          <TypingIndicator 
+            sessionId={session.sessionId || ''} 
+            className="px-4 pb-2"
+            showUsernames={true}
+            theme="light"
+          />
+        )}
       />
 
       <View style={styles.inputContainer}>
         <ThemedTextInput
           style={styles.input}
           value={inputText}
-          onChangeText={setInputText}
+          onChangeText={handleTextChange}
+          onBlur={handleTypingStop}
           placeholder="Type a message..."
           multiline
         />
@@ -141,11 +172,20 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#fff',
   },
+  timestampContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    marginTop: 4,
+  },
   timestamp: {
     fontSize: 12,
     color: 'rgba(255, 255, 255, 0.7)',
-    marginTop: 4,
-    alignSelf: 'flex-end',
+  },
+  readIndicator: {
+    fontSize: 12,
+    color: '#00BFFF', // A distinct color for read indicator
+    marginLeft: 5,
   },
   inputContainer: {
     flexDirection: 'row',

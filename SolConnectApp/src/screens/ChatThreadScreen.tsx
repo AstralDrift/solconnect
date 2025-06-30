@@ -4,6 +4,8 @@ import { Message } from '../types';
 import SolChatSDK from '../SolChatSDK';
 import { useToast } from '../components/Toast';
 import { getMessageBus } from '../services/MessageBus';
+import { useTypingIndicator } from '../hooks/useTypingIndicator';
+import { TypingIndicator } from '../components/TypingIndicator';
 
 // Status icon component
 const StatusIcon = ({ status }: { status?: string }) => {
@@ -44,6 +46,12 @@ export default function ChatThreadScreen(): JSX.Element {
   const [isLoading, setIsLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { showToast } = useToast();
+  
+  // Typing indicator hook
+  const { isTyping, handleTypingStart, handleTypingStop } = useTypingIndicator({
+    sessionId: session?.session_id || '',
+    enabled: !!session
+  });
 
   useEffect(() => {
     const loadMessages = async () => {
@@ -227,9 +235,22 @@ export default function ChatThreadScreen(): JSX.Element {
   const handleKeyPress = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      handleTypingStop();
       sendMessage();
     }
-  }, [sendMessage]);
+  }, [sendMessage, handleTypingStop]);
+  
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setDraft(value);
+    
+    // Handle typing indicators
+    if (value.length > 0 && !isTyping) {
+      handleTypingStart();
+    } else if (value.length === 0 && isTyping) {
+      handleTypingStop();
+    }
+  }, [isTyping, handleTypingStart, handleTypingStop]);
 
   const clearChat = useCallback(async () => {
     if (window.confirm('Are you sure you want to clear this chat history? This cannot be undone.')) {
@@ -387,6 +408,15 @@ export default function ChatThreadScreen(): JSX.Element {
             </div>
           ))
         )}
+        
+        {/* Typing indicator */}
+        <TypingIndicator 
+          sessionId={session?.session_id || ''} 
+          className="px-4 pb-2"
+          showUsernames={true}
+          theme="light"
+        />
+        
         <div ref={messagesEndRef} />
       </div>
 
@@ -399,8 +429,9 @@ export default function ChatThreadScreen(): JSX.Element {
         <input
           type="text"
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={handleInputChange}
           onKeyPress={handleKeyPress}
+          onBlur={handleTypingStop}
           placeholder="Type a message..."
           disabled={isSending}
           style={{

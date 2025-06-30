@@ -32,8 +32,8 @@ export enum AckStatus {
 }
 
 export interface ProtocolMessage {
-  type: 'chat' | 'ack' | 'ping' | 'pong';
-  payload: ChatMessage | AckMessage | PingMessage | PongMessage;
+  type: 'chat' | 'ack' | 'ping' | 'pong' | 'read_receipt';
+  payload: ChatMessage | AckMessage | PingMessage | PongMessage | ReadReceipt;
   version: number;
   timestamp: number;
 }
@@ -49,6 +49,15 @@ export interface PongMessage {
   refPingId: string;
   timestamp: number;
   data?: Uint8Array;
+}
+
+export interface ReadReceipt {
+  id: string;
+  messageId: string;
+  sessionId: string;
+  readerWallet: string;
+  status: 'delivered' | 'read';
+  timestamp: number;
 }
 
 /**
@@ -274,4 +283,104 @@ export class ProtocolBufferCodec {
     }
 
     return createResult.success(undefined);
-  };
+  }
+}
+
+/**
+ * Global codec instance
+ */
+export const protocolCodec = new ProtocolBufferCodec();
+
+/**
+ * Message factory functions for convenience
+ */
+export const MessageFactory = {
+  /**
+   * Create a chat message
+   */
+  chat: (
+    senderWallet: string,
+    recipientWallet: string,
+    encryptedPayload: Uint8Array,
+    signature: Uint8Array,
+    options: {
+      attachmentUrl?: string;
+      ttl?: number;
+    } = {}
+  ): ProtocolMessage => ({
+    type: 'chat',
+    version: 1,
+    timestamp: Date.now(),
+    payload: protocolCodec.createChatMessage(
+      senderWallet,
+      recipientWallet,
+      encryptedPayload,
+      signature,
+      options
+    )
+  }),
+
+  /**
+   * Create an acknowledgment message
+   */
+  ack: (refMessageId: string, status: AckStatus): ProtocolMessage => ({
+    type: 'ack',
+    version: 1,
+    timestamp: Date.now(),
+    payload: protocolCodec.createAckMessage(refMessageId, status)
+  }),
+
+  /**
+   * Create a ping message
+   */
+  ping: (data?: Uint8Array): ProtocolMessage => ({
+    type: 'ping',
+    version: 1,
+    timestamp: Date.now(),
+    payload: protocolCodec.createPingMessage(data)
+  }),
+
+  /**
+   * Create a pong message
+   */
+  pong: (refPingId: string, data?: Uint8Array): ProtocolMessage => ({
+    type: 'pong',
+    version: 1,
+    timestamp: Date.now(),
+    payload: protocolCodec.createPongMessage(refPingId, data)
+  }),
+
+  /**
+   * Create a read receipt message
+   */
+  readReceipt: (messageId: string, readerWallet: string): ProtocolMessage => ({
+    type: 'read_receipt',
+    version: 1,
+    timestamp: Date.now(),
+    payload: protocolCodec.createReadReceipt(messageId, readerWallet)
+  }),
+
+  /**
+   * Create a delivered acknowledgment
+   */
+  delivered: (refMessageId: string): ProtocolMessage =>
+    MessageFactory.ack(refMessageId, AckStatus.DELIVERED),
+
+  /**
+   * Create a failed acknowledgment
+   */
+  failed: (refMessageId: string): ProtocolMessage =>
+    MessageFactory.ack(refMessageId, AckStatus.FAILED),
+
+  /**
+   * Create an expired acknowledgment
+   */
+  expired: (refMessageId: string): ProtocolMessage =>
+    MessageFactory.ack(refMessageId, AckStatus.EXPIRED),
+
+  /**
+   * Create a rejected acknowledgment
+   */
+  rejected: (refMessageId: string): ProtocolMessage =>
+    MessageFactory.ack(refMessageId, AckStatus.REJECTED)
+};

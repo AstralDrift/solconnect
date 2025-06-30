@@ -7,13 +7,15 @@ interface Props {
   placeholder?: string;
   multiline?: boolean;
   style?: object;
+  onBlur?: () => void;
 }
 
-export const ThemedTextInput: React.FC<Props> = ({ value, onChangeText, placeholder, multiline, style }) => (
+export const ThemedTextInput: React.FC<Props> = ({ value, onChangeText, placeholder, multiline, style, onBlur }) => (
   <TextInput
     style={[styles.input, style]}
     value={value}
     onChangeText={onChangeText}
+    onBlur={onBlur}
     placeholder={placeholder}
     placeholderTextColor="#999"
     multiline={multiline}

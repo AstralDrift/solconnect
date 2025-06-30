@@ -3,15 +3,16 @@
  * Manages message routing, validation, acknowledgments, and state updates
  */
 
-import { ProtocolMessage, protocolCodec, ChatMessage, AckMessage, AckStatus, MessageFactory } from './ProtocolBuffers';
+import { ProtocolMessage, protocolCodec, ChatMessage, AckMessage, AckStatus, MessageFactory, ReadReceipt } from './ProtocolBuffers';
 import { SolConnectError, ErrorCode, Result, createResult } from '../../types/errors';
-import { Message } from '../../types';
+import { Message, MessageStatus, MessageStatusUpdate } from '../../types';
 
 export interface MessageProcessor {
   processChatMessage(message: ChatMessage): Promise<Result<void>>;
   processAckMessage(message: AckMessage): Promise<Result<void>>;
   processPingMessage(message: any): Promise<Result<void>>;
   processPongMessage(message: any): Promise<Result<void>>;
+  processReadReceipt(message: ReadReceipt): Promise<Result<void>>;
 }
 
 export interface MessageHandlerConfig {
@@ -20,6 +21,7 @@ export interface MessageHandlerConfig {
   heartbeatInterval?: number;
   messageTimeout?: number;
   maxRetries?: number;
+  onStatusUpdate?: (update: MessageStatusUpdate) => void;
 }
 
 export interface MessageMetrics {
@@ -45,7 +47,9 @@ export class MessageHandler implements MessageProcessor {
   private pendingMessages = new Map<string, { message: ChatMessage; timestamp: number; retries: number }>();
   private messageHandlers = new Map<string, (message: Message) => void>();
   private ackHandlers = new Map<string, (status: AckStatus) => void>();
+  private readReceiptHandlers = new Map<string, (readReceipt: ReadReceipt) => void>();
   private heartbeatInterval: NodeJS.Timeout | null = null;
+  private onStatusUpdate?: (update: MessageStatusUpdate) => void;
 
   constructor(config: MessageHandlerConfig = {}) {
     this.config = {
@@ -54,8 +58,11 @@ export class MessageHandler implements MessageProcessor {
       heartbeatInterval: 30000, // 30 seconds
       messageTimeout: 10000, // 10 seconds
       maxRetries: 3,
+      onStatusUpdate: undefined,
       ...config
     };
+
+    this.onStatusUpdate = this.config.onStatusUpdate;
 
     this.metrics = {
       messagesSent: 0,
@@ -92,6 +99,8 @@ export class MessageHandler implements MessageProcessor {
           return await this.processPingMessage(protocolMessage.payload);
         case 'pong':
           return await this.processPongMessage(protocolMessage.payload);
+        case 'read_receipt':
+          return await this.processReadReceipt(protocolMessage.payload as ReadReceipt);
         default:
           return createResult.error(SolConnectError.validation(
             ErrorCode.INVALID_MESSAGE_FORMAT,
@@ -270,7 +279,26 @@ export class MessageHandler implements MessageProcessor {
       }
 
       console.log(`[MessageHandler] Received read receipt for message ${message.messageId} from ${message.readerWallet}`);
-      // TODO: Update UI or internal state to reflect message as read
+      
+      // Call specific read receipt handler if registered
+      const readReceiptHandler = this.readReceiptHandlers.get(message.messageId);
+      if (readReceiptHandler) {
+        readReceiptHandler(message);
+        this.readReceiptHandlers.delete(message.messageId);
+      }
+
+      // Create status update to notify UI
+      if (this.onStatusUpdate) {
+        const statusUpdate: MessageStatusUpdate = {
+          messageId: message.messageId,
+          sessionId: message.sessionId,
+          status: message.status === 'read' ? MessageStatus.READ : MessageStatus.DELIVERED,
+          timestamp: message.timestamp,
+          userId: message.readerWallet
+        };
+
+        this.onStatusUpdate(statusUpdate);
+      }
 
       return createResult.success(undefined);
     } catch (error) {
@@ -376,6 +404,20 @@ export class MessageHandler implements MessageProcessor {
   }
 
   /**
+   * Register a handler for read receipts for a specific message
+   */
+  registerReadReceiptHandler(messageId: string, handler: (readReceipt: ReadReceipt) => void): void {
+    this.readReceiptHandlers.set(messageId, handler);
+  }
+
+  /**
+   * Unregister a read receipt handler
+   */
+  unregisterReadReceiptHandler(messageId: string): void {
+    this.readReceiptHandlers.delete(messageId);
+  }
+
+  /**
    * Cleanup and stop heartbeat
    */
   cleanup(): void {
@@ -387,6 +429,7 @@ export class MessageHandler implements MessageProcessor {
     this.pendingMessages.clear();
     this.messageHandlers.clear();
     this.ackHandlers.clear();
+    this.readReceiptHandlers.clear();
   }
 
   /**

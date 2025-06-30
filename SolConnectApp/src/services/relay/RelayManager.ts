@@ -289,7 +289,7 @@ export class RelayManager {
       const startTime = Date.now();
 
       // Find best backup connection
-      const bestBackup = this.findBestBackupConnection();
+      let bestBackup = this.findBestBackupConnection();
       
       if (!bestBackup) {
         // No backup available, try to establish new connection

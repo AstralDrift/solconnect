@@ -13,6 +13,7 @@ interface EncryptedMessage {
   sender: string;
   content: string;
   timestamp: number;
+  read?: boolean;
 }
 
 interface SolChatSDKInterface {

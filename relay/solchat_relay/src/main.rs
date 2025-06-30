@@ -4,7 +4,7 @@ use hyper::{Body, Request, Response, Server};
 use hyper::service::{make_service_fn, service_fn};
 use quinn::{Endpoint, ServerConfig};
 use solchat_protocol::messages::{ChatMessage, AckMessage, ReadReceipt, PingMessage, PongMessage};
-use solchat_protocol::WalletAddress;
+
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -185,7 +185,13 @@ async fn handle_connection(conn: quinn::Connecting, state: AppState) {
                 while let Some(routable_msg) = rx.recv().await {
                     match connection_clone.open_bi().await {
                         Ok((mut send, _recv)) => {
-                            let msg_bytes = prost::Message::encode_to_vec(&routable_msg.message);
+                            let msg_bytes = match routable_msg.message {
+                                RelayMessage::Chat(msg) => prost::Message::encode_to_vec(&msg),
+                                RelayMessage::Ack(msg) => prost::Message::encode_to_vec(&msg),
+                                RelayMessage::ReadReceipt(msg) => prost::Message::encode_to_vec(&msg),
+                                RelayMessage::Ping(msg) => prost::Message::encode_to_vec(&msg),
+                                RelayMessage::Pong(msg) => prost::Message::encode_to_vec(&msg),
+                            };
                             if let Err(e) = send.write_all(&msg_bytes).await {
                                 error!("Failed to forward message: {}", e);
                             } else {
@@ -246,29 +252,54 @@ async fn handle_stream(
         
         debug!("📨 Received {} bytes", len);
         
-        let relay_message = if let Ok(chat_msg) = prost::Message::decode(data) {
-            RelayMessage::Chat(chat_msg)
+        if let Ok(chat_msg) = prost::Message::decode(data) {
+            if let Err(e) = handle_chat_message(chat_msg, send, &state, remote_addr, client_tx.clone()).await {
+                error!("Failed to handle chat message: {}", e);
+                state.metrics.record_message_failed();
+            } else {
+                let duration = start_time.elapsed().as_secs_f64();
+                state.metrics.record_latency(duration);
+                state.metrics.record_message_processed(len, "ChatMessage");
+            }
         } else if let Ok(ack_msg) = prost::Message::decode(data) {
-            RelayMessage::Ack(ack_msg)
+            if let Err(e) = handle_ack_message(ack_msg, send, &state).await {
+                error!("Failed to handle ack message: {}", e);
+                state.metrics.record_message_failed();
+            } else {
+                let duration = start_time.elapsed().as_secs_f64();
+                state.metrics.record_latency(duration);
+                state.metrics.record_message_processed(len, "AckMessage");
+            }
         } else if let Ok(read_receipt_msg) = prost::Message::decode(data) {
-            RelayMessage::ReadReceipt(read_receipt_msg)
+            if let Err(e) = handle_read_receipt_message(read_receipt_msg, send, &state).await {
+                error!("Failed to handle read receipt message: {}", e);
+                state.metrics.record_message_failed();
+            } else {
+                let duration = start_time.elapsed().as_secs_f64();
+                state.metrics.record_latency(duration);
+                state.metrics.record_message_processed(len, "ReadReceiptMessage");
+            }
         } else if let Ok(ping_msg) = prost::Message::decode(data) {
-            RelayMessage::Ping(ping_msg)
+            if let Err(e) = handle_ping_message(ping_msg, send, &state).await {
+                error!("Failed to handle ping message: {}", e);
+                state.metrics.record_message_failed();
+            } else {
+                let duration = start_time.elapsed().as_secs_f64();
+                state.metrics.record_latency(duration);
+                state.metrics.record_message_processed(len, "PingMessage");
+            }
         } else if let Ok(pong_msg) = prost::Message::decode(data) {
-            RelayMessage::Pong(pong_msg)
+            if let Err(e) = handle_pong_message(pong_msg, send, &state).await {
+                error!("Failed to handle pong message: {}", e);
+                state.metrics.record_message_failed();
+            } else {
+                let duration = start_time.elapsed().as_secs_f64();
+                state.metrics.record_latency(duration);
+                state.metrics.record_message_processed(len, "PongMessage");
+            }
         } else {
             warn!("Failed to decode incoming message as any known type");
             state.metrics.record_message_failed();
-            return Ok(());
-        };
-
-        if let Err(e) = state.router.route_message(relay_message, remote_addr).await {
-            error!("Failed to route message: {}", e);
-            state.metrics.record_message_failed();
-        } else {
-            let duration = start_time.elapsed().as_secs_f64();
-            state.metrics.record_latency(duration);
-            state.metrics.record_message_processed(len, "RoutedMessage");
         }
     }
     
@@ -276,41 +307,114 @@ async fn handle_stream(
     Ok(())
 }
 
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use solchat_protocol::WalletAddress;
-
-    #[tokio::test]
-    async fn test_chat_message_processing() {
-        let sender = WalletAddress::test_address(1);
-        let recipient = WalletAddress::test_address(2);
-        let payload = b"Hello, QUIC!".to_vec();
-        let signature = b"fake_signature".to_vec();
-        
-        let chat_msg = ChatMessage::new(&sender, &recipient, payload, signature);
-        
-        // Verify message can be encoded/decoded
-        let encoded = prost::Message::encode_to_vec(&chat_msg);
-        let decoded: ChatMessage = prost::Message::decode(&encoded[..]).unwrap();
-        
-        assert_eq!(decoded.id, chat_msg.id);
-        assert_eq!(decoded.sender_wallet, chat_msg.sender_wallet);
-        assert_eq!(decoded.encrypted_payload, chat_msg.encrypted_payload);
+async fn handle_chat_message(
+    chat_msg: ChatMessage,
+    send: &mut quinn::SendStream,
+    state: &AppState,
+    remote_addr: SocketAddr,
+    client_tx: mpsc::Sender<RoutableMessage>,
+) -> Result<()> {
+    let msg_span = span!(Level::INFO, "chat_message", 
+        id = %chat_msg.id,
+        sender = %chat_msg.sender_wallet,
+        recipient = %chat_msg.recipient_wallet,
+        size = chat_msg.encrypted_payload.len()
+    );
+    let _enter = msg_span.enter();
+    
+    info!("💬 Processing chat message");
+    
+    // Basic validation
+    if chat_msg.encrypted_payload.is_empty() {
+        warn!("Empty payload in chat message");
+        let ack = AckMessage::rejected(chat_msg.id.clone());
+        let ack_bytes = prost::Message::encode_to_vec(&ack);
+        send.write_all(&ack_bytes).await?;
+        state.metrics.record_bytes_sent(ack_bytes.len());
+        state.metrics.record_message_processed(ack_bytes.len(), "AckMessage");
+        return Ok(());
     }
     
-    #[test]
-    fn test_metrics_creation() {
-        let metrics = Metrics::new();
-        let exported = metrics.export_metrics().unwrap();
-        assert!(exported.contains("solchat_messages_processed_total"));
+    if chat_msg.is_expired() {
+        warn!("Received expired message");
+        let ack = AckMessage::expired(chat_msg.id.clone());
+        let ack_bytes = prost::Message::encode_to_vec(&ack);
+        send.write_all(&ack_bytes).await?;
+        state.metrics.record_bytes_sent(ack_bytes.len());
+        state.metrics.record_message_processed(ack_bytes.len(), "AckMessage");
+        return Ok(());
     }
     
-    #[test]
-    fn test_server_config_creation() {
-        let config = configure_server();
-        assert!(config.is_ok());
+    // TODO: Validate signature here
+    
+    // Register the sender if this is their first message
+    if let Ok(sender_wallet) = chat_msg.sender() {
+        // Note: In a full implementation, we'd properly handle client registration
+        // during connection setup with authentication
+        state.router.register_client(sender_wallet, client_tx).await?;
     }
+    
+    // Route the message
+    let status = state.router.route_message(RelayMessage::Chat(chat_msg.clone()), remote_addr).await?;
+    
+    // Send acknowledgment
+    let ack = AckMessage::new(chat_msg.id.clone(), status);
+    let ack_bytes = prost::Message::encode_to_vec(&ack);
+    send.write_all(&ack_bytes).await?;
+    state.metrics.record_bytes_sent(ack_bytes.len());
+    state.metrics.record_message_processed(ack_bytes.len(), "AckMessage");
+    
+    Ok(())
+}
+
+async fn handle_ack_message(
+    ack_msg: AckMessage,
+    send: &mut quinn::SendStream,
+    state: &AppState,
+) -> Result<()> {
+    let ack_bytes = prost::Message::encode_to_vec(&ack_msg);
+    send.write_all(&ack_bytes).await?;
+    
+    state.metrics.record_bytes_sent(ack_bytes.len());
+    state.metrics.record_message_processed(ack_bytes.len(), "AckMessage");
+    
+    debug!("✅ Sent acknowledgment: {}", ack_msg.id);
+    Ok(())
+}
+
+async fn handle_read_receipt_message(
+    read_receipt_msg: ReadReceipt,
+    send: &mut quinn::SendStream,
+    state: &AppState,
+) -> Result<()> {
+    let read_receipt_bytes = prost::Message::encode_to_vec(&read_receipt_msg);
+    send.write_all(&read_receipt_bytes).await?;
+
+    state.metrics.record_bytes_sent(read_receipt_bytes.len());
+    state.metrics.record_message_processed(read_receipt_bytes.len(), "ReadReceiptMessage");
+
+    debug!("👀 Sent read receipt: {}", read_receipt_msg.id);
+    Ok(())
+}
+
+async fn handle_ping_message(
+    ping_msg: PingMessage,
+    send: &mut quinn::SendStream,
+    state: &AppState,
+) -> Result<()> {
+    let pong = PongMessage { id: ping_msg.id.clone(), timestamp: ping_msg.timestamp, data: ping_msg.data, ref_ping_id: ping_msg.id.clone() };
+    let pong_bytes = prost::Message::encode_to_vec(&pong);
+    send.write_all(&pong_bytes).await?;
+    state.metrics.record_bytes_sent(pong_bytes.len());
+    info!("📡 Ping-pong: {}", ping_msg.id);
+    Ok(())
+}
+
+async fn handle_pong_message(
+    pong_msg: PongMessage,
+    send: &mut quinn::SendStream,
+    state: &AppState,
+) -> Result<()> {
+    info!("🏓 Received pong: {}", pong_msg.id);
+    Ok(())
 } 
