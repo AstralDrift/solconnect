@@ -511,20 +511,24 @@ export class QuicTransport extends MessageTransport {
  * Transport factory for creating appropriate transport instances
  */
 export class TransportFactory {
-  static create(type: 'websocket' | 'quic' = 'websocket'): MessageTransport {
+  static create(type: 'websocket' | 'quic' | 'relay-websocket' = 'websocket'): MessageTransport {
     switch (type) {
       case 'websocket':
         return new WebSocketTransport();
       case 'quic':
         return new QuicTransport();
+      case 'relay-websocket':
+        // Dynamic import to avoid circular dependencies
+        const { RelayWebSocketTransport } = require('./RelayWebSocketTransport');
+        return new RelayWebSocketTransport();
       default:
         throw new Error(`Unknown transport type: ${type}`);
     }
   }
 
   static createForEnvironment(): MessageTransport {
-    // Use WebSocket for development, QUIC for production
-    const isProduction = process.env.NODE_ENV === 'production';
-    return this.create(isProduction ? 'quic' : 'websocket');
+    // Use relay-enabled WebSocket transport by default for automatic failover
+    const { RelayWebSocketTransport } = require('./RelayWebSocketTransport');
+    return new RelayWebSocketTransport();
   }
 }
