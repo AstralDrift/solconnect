@@ -10,6 +10,7 @@ import { DeliveryReceipt, MessageHandler, Subscription } from './transport/Messa
 import { Metrics, getErrorTracker, initializeMonitoring } from './monitoring';
 import { RetryUtility } from './utils/RetryUtility';
 import { CircuitBreaker } from './utils/CircuitBreaker';
+import { SyncStats } from './sync/SyncProtocol';
 
 export interface WalletInfo {
   address: string;
@@ -516,6 +517,15 @@ export class SolConnectSDK {
           context
         );
         return createResult.error(error);
+      }
+
+      const session = this.activeSessions.get(sessionId)!;
+      
+      // Clean up auto-sync if enabled
+      const intervalId = (session as any)._autoSyncInterval;
+      if (intervalId) {
+        clearInterval(intervalId);
+        this.log('Auto-sync disabled for ending session:', sessionId);
       }
 
       // Remove session
@@ -1282,6 +1292,234 @@ export class SolConnectSDK {
       getErrorTracker().captureError(fatalError, { context: 'SDK cleanup fatal error' });
       
       return createResult.error(fatalError);
+    }
+  }
+
+  /**
+   * Sync messages for a specific session or all sessions
+   * @param sessionId - Optional session ID to sync. If not provided, syncs all sessions
+   * @returns Number of messages synced
+   */
+  async syncMessages(sessionId?: string): Promise<Result<number>> {
+    const syncContext = {
+      operation: 'syncMessages',
+      sessionId,
+      timestamp: Date.now(),
+      isInitialized: this.isInitialized,
+      messageBusReady: !!this.messageBus
+    };
+
+    if (!this.isInitialized || !this.messageBus) {
+      const error = ErrorFactory.sdkNotInitialized('syncMessages', syncContext);
+      return createResult.error(error);
+    }
+
+    try {
+      this.log('Starting message sync', sessionId ? `for session ${sessionId}` : 'for all sessions');
+      Metrics.action('sync_started', undefined, { sessionId });
+
+      const syncResult = await this.messageBus.syncMessages(sessionId);
+
+      if (syncResult.success) {
+        const syncedCount = syncResult.data!;
+        this.log('Message sync completed', `${syncedCount} messages synced`);
+        Metrics.business('messages_synced', syncedCount, { sessionId });
+        return createResult.success(syncedCount);
+      } else {
+        Metrics.action('sync_failed', undefined, { 
+          sessionId, 
+          error: syncResult.error?.message 
+        });
+        return syncResult;
+      }
+    } catch (error) {
+      const syncError = SolConnectError.system(
+        ErrorCode.UNKNOWN_ERROR,
+        `Sync failed: ${error}`,
+        'Failed to sync messages',
+        { ...syncContext, error: error?.toString() }
+      );
+      
+      Metrics.action('sync_failed', undefined, { 
+        sessionId, 
+        error: syncError.message 
+      });
+      getErrorTracker().captureError(syncError, { context: 'Message sync' });
+      return createResult.error(syncError);
+    }
+  }
+
+  /**
+   * Get the current sync status
+   * @returns Current sync state including progress and last sync time
+   */
+  getSyncStatus(): Result<{
+    syncInProgress: boolean;
+    lastSyncAt?: Date;
+    queuedMessageCount: number;
+  }> {
+    if (!this.messageBus) {
+      return createResult.error(ErrorFactory.sdkNotInitialized('getSyncStatus'));
+    }
+
+    try {
+      const state = this.messageBus.getState();
+      return createResult.success({
+        syncInProgress: state.syncInProgress,
+        lastSyncAt: state.lastSyncAt,
+        queuedMessageCount: state.queuedMessageCount
+      });
+    } catch (error) {
+      return createResult.error(SolConnectError.system(
+        ErrorCode.UNKNOWN_ERROR,
+        `Failed to get sync status: ${error}`,
+        'Failed to get sync status',
+        { error: error?.toString() }
+      ));
+    }
+  }
+
+  /**
+   * Force process all queued messages
+   * Useful when coming back online after being offline
+   * @returns Number of messages processed
+   */
+  async processQueuedMessages(): Promise<Result<number>> {
+    const processContext = {
+      operation: 'processQueuedMessages',
+      timestamp: Date.now(),
+      isInitialized: this.isInitialized,
+      messageBusReady: !!this.messageBus
+    };
+
+    if (!this.isInitialized || !this.messageBus) {
+      const error = ErrorFactory.sdkNotInitialized('processQueuedMessages', processContext);
+      return createResult.error(error);
+    }
+
+    try {
+      this.log('Processing queued messages');
+      Metrics.action('queue_processing_started');
+
+      const processResult = await this.messageBus.processQueuedMessages();
+
+      if (processResult.success) {
+        const processedCount = processResult.data!;
+        this.log('Queue processing completed', `${processedCount} messages processed`);
+        Metrics.business('messages_processed_from_queue', processedCount);
+        return createResult.success(processedCount);
+      } else {
+        Metrics.action('queue_processing_failed', undefined, { 
+          error: processResult.error?.message 
+        });
+        return processResult;
+      }
+    } catch (error) {
+      const processError = SolConnectError.system(
+        ErrorCode.UNKNOWN_ERROR,
+        `Queue processing failed: ${error}`,
+        'Failed to process queued messages',
+        { ...processContext, error: error?.toString() }
+      );
+      
+      Metrics.action('queue_processing_failed', undefined, { 
+        error: processError.message 
+      });
+      getErrorTracker().captureError(processError, { context: 'Queue processing' });
+      return createResult.error(processError);
+    }
+  }
+
+  /**
+   * Enable automatic sync for a session
+   * Messages will be synced automatically when network is available
+   * @param sessionId - Session ID to enable auto-sync for
+   * @param intervalMs - Sync interval in milliseconds (default: 5000)
+   */
+  async enableAutoSync(sessionId: string, intervalMs: number = 5000): Promise<Result<void>> {
+    const autoSyncContext = {
+      operation: 'enableAutoSync',
+      sessionId,
+      intervalMs,
+      timestamp: Date.now()
+    };
+
+    const session = this.activeSessions.get(sessionId);
+    if (!session) {
+      const error = SolConnectError.validation(
+        ErrorCode.INVALID_MESSAGE_FORMAT,
+        'Session not found',
+        'Chat session not found. Please start a new session.',
+        autoSyncContext
+      );
+      return createResult.error(error);
+    }
+
+    try {
+      // Store auto-sync interval
+      const intervalId = setInterval(async () => {
+        if (this.messageBus?.connectionStatus === 'connected') {
+          await this.syncMessages(sessionId);
+        }
+      }, intervalMs);
+
+      // Store interval ID for cleanup
+      (session as any)._autoSyncInterval = intervalId;
+      
+      this.log('Auto-sync enabled for session', sessionId);
+      Metrics.action('auto_sync_enabled', undefined, { sessionId, intervalMs });
+      
+      return createResult.success(undefined);
+    } catch (error) {
+      const syncError = SolConnectError.system(
+        ErrorCode.UNKNOWN_ERROR,
+        `Failed to enable auto-sync: ${error}`,
+        'Failed to enable automatic sync',
+        { ...autoSyncContext, error: error?.toString() }
+      );
+      
+      getErrorTracker().captureError(syncError, { context: 'Auto-sync setup' });
+      return createResult.error(syncError);
+    }
+  }
+
+  /**
+   * Disable automatic sync for a session
+   * @param sessionId - Session ID to disable auto-sync for
+   */
+  async disableAutoSync(sessionId: string): Promise<Result<void>> {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) {
+      const error = SolConnectError.validation(
+        ErrorCode.INVALID_MESSAGE_FORMAT,
+        'Session not found',
+        'Chat session not found.',
+        { sessionId }
+      );
+      return createResult.error(error);
+    }
+
+    try {
+      const intervalId = (session as any)._autoSyncInterval;
+      if (intervalId) {
+        clearInterval(intervalId);
+        delete (session as any)._autoSyncInterval;
+      }
+      
+      this.log('Auto-sync disabled for session', sessionId);
+      Metrics.action('auto_sync_disabled', undefined, { sessionId });
+      
+      return createResult.success(undefined);
+    } catch (error) {
+      const syncError = SolConnectError.system(
+        ErrorCode.UNKNOWN_ERROR,
+        `Failed to disable auto-sync: ${error}`,
+        'Failed to disable automatic sync',
+        { sessionId, error: error?.toString() }
+      );
+      
+      getErrorTracker().captureError(syncError, { context: 'Auto-sync teardown' });
+      return createResult.error(syncError);
     }
   }
 

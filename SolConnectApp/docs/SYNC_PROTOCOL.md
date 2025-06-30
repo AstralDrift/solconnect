@@ -206,6 +206,97 @@ const syncConfig = {
 4. **Efficient Sync** - Only missing messages are transferred
 5. **Real-time Updates** - Messages appear instantly on online devices
 
+## SDK Integration
+
+The sync protocol is now fully integrated into the SolConnectSDK with the following methods:
+
+### Manual Sync
+
+```typescript
+// Initialize SDK
+const sdk = await initializeSDK({
+  relayEndpoint: 'ws://localhost:8080'
+});
+
+// Sync messages for a specific session
+const syncResult = await sdk.syncMessages(sessionId);
+if (syncResult.success) {
+  console.log(`Synced ${syncResult.data} messages`);
+}
+
+// Sync all active sessions
+const allSyncResult = await sdk.syncMessages();
+```
+
+### Auto-Sync
+
+Enable automatic message synchronization:
+
+```typescript
+// Enable auto-sync for a session (syncs every 5 seconds)
+await sdk.enableAutoSync(sessionId, 5000);
+
+// Disable auto-sync
+await sdk.disableAutoSync(sessionId);
+```
+
+### Sync Status
+
+Monitor sync progress:
+
+```typescript
+const status = sdk.getSyncStatus();
+if (status.success) {
+  console.log('Sync in progress:', status.data.syncInProgress);
+  console.log('Last sync:', status.data.lastSyncAt);
+  console.log('Queued messages:', status.data.queuedMessageCount);
+}
+```
+
+### Process Queued Messages
+
+Force process queued messages when coming back online:
+
+```typescript
+// Process all queued messages
+const processResult = await sdk.processQueuedMessages();
+if (processResult.success) {
+  console.log(`Processed ${processResult.data} queued messages`);
+}
+```
+
+### Example: Complete Sync Flow
+
+```typescript
+// Initialize SDK and start a session
+const sdk = await initializeSDK({ relayEndpoint: 'ws://localhost:8080' });
+await sdk.initialize();
+await sdk.connectWallet();
+
+const session = await sdk.startSession({ 
+  peerWallet: 'peer123...' 
+});
+
+// Enable auto-sync for the session
+await sdk.enableAutoSync(session.data.session_id);
+
+// Send messages (they'll sync automatically)
+await sdk.sendMessage(session.data.session_id, 'Hello!');
+
+// Manual sync when needed
+await sdk.syncMessages(session.data.session_id);
+
+// Check sync status
+const status = sdk.getSyncStatus();
+console.log('Sync status:', status.data);
+
+// Process queued messages after being offline
+await sdk.processQueuedMessages();
+
+// Clean up when done
+await sdk.endSession(session.data.session_id); // Auto-sync cleaned up automatically
+```
+
 ## Next Steps
 
 - Implement compression for sync messages
